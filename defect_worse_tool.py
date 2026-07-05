@@ -23,7 +23,11 @@ WHOLE_TOOL_PREFIXES = ("KP", "KD", "KW")
 CHAMBER_PREFIXES = ("KE", "KT")
 DEFAULT_SHEET_NAME = "worse_tool"
 SPECIAL_STAGE_ID = "SPECIAL_STEP_ONLY"
+STEP_ONLY_STAGE_ID = "ALL_STAGES"
 SpecialProcessRules = Dict[str, Dict[str, Optional[Set[str]]]]
+PROCESS_AGGREGATION_STAGE_STEP = "stage_step"
+PROCESS_AGGREGATION_STEP = "step"
+PROCESS_AGGREGATION_CHOICES = (PROCESS_AGGREGATION_STAGE_STEP, PROCESS_AGGREGATION_STEP)
 
 
 def normalize_column_name(name: object) -> str:
@@ -199,6 +203,33 @@ def get_special_bsl_count(
     return None
 
 
+def normalize_process_aggregation(value: str) -> str:
+    normalized = str(value or PROCESS_AGGREGATION_STAGE_STEP).strip().lower().replace("-", "_")
+    aliases = {
+        "stage+step": PROCESS_AGGREGATION_STAGE_STEP,
+        "stage_step": PROCESS_AGGREGATION_STAGE_STEP,
+        "stage_and_step": PROCESS_AGGREGATION_STAGE_STEP,
+        "step": PROCESS_AGGREGATION_STEP,
+        "step_only": PROCESS_AGGREGATION_STEP,
+        "step_id": PROCESS_AGGREGATION_STEP,
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "process_aggregation must be one of: {}".format(", ".join(PROCESS_AGGREGATION_CHOICES))
+        )
+    return aliases[normalized]
+
+
+def apply_process_aggregation(df: pd.DataFrame, process_aggregation: str) -> pd.DataFrame:
+    mode = normalize_process_aggregation(process_aggregation)
+    if mode == PROCESS_AGGREGATION_STAGE_STEP:
+        return df
+    adjusted = df.copy()
+    adjusted["Stage_ID"] = STEP_ONLY_STAGE_ID
+    adjusted["Process_Stage"] = "Step-only | Step_ID=" + adjusted["Step_ID"].astype(str).str.strip()
+    return adjusted
+
+
 def apply_special_process_rules(
     df: pd.DataFrame,
     defect_col: str,
@@ -278,6 +309,7 @@ def summarize_one_defect(
     min_wafers: int = 5,
     outlier_sigma: float = 3.0,
     special_process_rules: Optional[SpecialProcessRules] = None,
+    process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
 ) -> pd.DataFrame:
     filtered = filter_outliers_for_defect(df, defect_col, outlier_sigma=outlier_sigma)
     if filtered.empty:
@@ -287,6 +319,7 @@ def summarize_one_defect(
         defect_col,
         special_process_rules=special_process_rules,
     )
+    filtered = apply_process_aggregation(filtered, process_aggregation)
 
     group_cols = ["Stage_ID", "Step_ID", "Equipment_Group", "Chamber_Group", "Group_Level", "Tool_Group"]
     grouped = (
@@ -316,7 +349,7 @@ def summarize_one_defect(
             bsl_stage_lookup,
             bsl_defect_lookup,
         )
-        if str(row["Stage_ID"]).strip() == SPECIAL_STAGE_ID
+        if str(row["Stage_ID"]).strip() in {SPECIAL_STAGE_ID, STEP_ONLY_STAGE_ID}
         else get_bsl_count(
             defect_col,
             row["Stage_ID"],
@@ -376,6 +409,7 @@ def build_worse_tool_result(
     min_wafers: int = 5,
     outlier_sigma: float = 3.0,
     special_process_rules: Optional[SpecialProcessRules] = None,
+    process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
 ) -> pd.DataFrame:
     df = read_table(input_path, sheet_name=input_sheet)
     validate_required_columns(df)
@@ -395,6 +429,7 @@ def build_worse_tool_result(
             min_wafers=min_wafers,
             outlier_sigma=outlier_sigma,
             special_process_rules=special_process_rules,
+            process_aggregation=process_aggregation,
         )
         if not piece.empty:
             pieces.append(piece)
@@ -533,6 +568,12 @@ def parse_args() -> argparse.Namespace:
             "'Defect Type1: STG01_STEP10, STG02_STEP10; Defect Type2: STEP30'."
         ),
     )
+    parser.add_argument(
+        "--process-aggregation",
+        choices=PROCESS_AGGREGATION_CHOICES,
+        default=PROCESS_AGGREGATION_STAGE_STEP,
+        help="Process grouping mode. stage_step keeps Stage_ID+Step_ID; step groups all stages by Step_ID only.",
+    )
     parser.add_argument("--bsl-multiplier", type=float, default=1.5, help="Flag threshold multiplier. Default: 1.5")
     parser.add_argument("--min-wafers", type=int, default=5, help="Minimum unique wafers per process-stage/tool group.")
     parser.add_argument("--outlier-sigma", type=float, default=3.0, help="Upper outlier cutoff in sigma. Default: 3.0")
@@ -556,6 +597,7 @@ def main() -> None:
         min_wafers=args.min_wafers,
         outlier_sigma=args.outlier_sigma,
         special_process_rules=parse_special_process_rules(args.special_process_rules),
+        process_aggregation=args.process_aggregation,
     )
     write_result_to_excel(
         result,

@@ -42,6 +42,7 @@ CSV/Excel
   -> 每个 defect 调用 summarize_one_defect()
   -> filter_outliers_for_defect()
   -> apply_special_process_rules()
+  -> apply_process_aggregation()
   -> groupby + wafer/BSL/threshold 筛选
   -> write_result_to_excel()
 ```
@@ -136,28 +137,52 @@ Process_Stage = Step-only | Step_ID=<Step_ID>
 
 注意：特殊规则在 `filter_outliers_for_defect()` 之后、groupby 之前执行，因此不会影响每个 defect 的 outlier 全局判断，但会影响后续 groupby、wafer count、BSL threshold 和输出。
 
-### 3.6 Worse Tool 判定
+### 3.6 Process Aggregation
+
+新增全局 process 聚合模式：
+
+```python
+PROCESS_AGGREGATION_STAGE_STEP = "stage_step"
+PROCESS_AGGREGATION_STEP = "step"
+```
+
+入口函数：
+
+```python
+normalize_process_aggregation(value)
+apply_process_aggregation(df, process_aggregation)
+```
+
+行为：
+
+- `stage_step`：默认模式，保留 `Stage_ID + Step_ID` 作为 process 分组。
+- `step`：忽略所有 `Stage_ID`，把 `Stage_ID` 改写为 `ALL_STAGES`，`Process_Stage` 改写为 `Step-only | Step_ID=<Step_ID>`，后续 groupby 只会对每个 `Step_ID + tool/chamber` 输出一次。
+
+该逻辑在 `apply_special_process_rules()` 之后执行。因此当全局 `step` 模式开启时，特殊 process rules 不会再额外拆分 stage；所有 stage 都会按 Step_ID 合并。
+
+### 3.7 Worse Tool 判定
 
 `summarize_one_defect()` 是单 defect 的核心计算入口：
 
 1. 过滤 outlier。
 2. 应用特殊 process 合并。
-3. 按 `Stage_ID`、`Step_ID`、`Equipment_Group`、`Chamber_Group`、`Group_Level`、`Tool_Group` 聚合。
-4. 计算 `Mean_Count`、`Median_Count`、`Max_Count`、`Wafer_Count`、`Row_Count`。
-5. 过滤 `Wafer_Count < min_wafers`。
-6. 查 BSL。
-7. 保留 `Mean_Count >= BSL * bsl_multiplier` 或 `Median_Count >= BSL * bsl_multiplier` 的组。
+3. 应用全局 process aggregation。
+4. 按 `Stage_ID`、`Step_ID`、`Equipment_Group`、`Chamber_Group`、`Group_Level`、`Tool_Group` 聚合。
+5. 计算 `Mean_Count`、`Median_Count`、`Max_Count`、`Wafer_Count`、`Row_Count`。
+6. 过滤 `Wafer_Count < min_wafers`。
+7. 查 BSL。
+8. 保留 `Mean_Count >= BSL * bsl_multiplier` 或 `Median_Count >= BSL * bsl_multiplier` 的组。
 
 `build_worse_tool_result()` 是完整分析入口，循环处理所有 defect 并 concat 结果。
 
-### 3.7 输出
+### 3.8 输出
 
 - `write_result_to_excel(result, output_path, sheet_name, write_mode)`：
   - `append`：读取目标 sheet 历史内容，concat 后替换目标 sheet。
   - `replace`：只替换目标 sheet，保留 workbook 其他 sheet。
 - `append_result_to_excel(...)`：旧接口兼容，内部固定使用 append。
 
-### 3.8 命令行参数
+### 3.9 命令行参数
 
 `parse_args()` 定义命令行入口。新增参数时应同步更新：
 
@@ -169,6 +194,13 @@ Process_Stage = Step-only | Step_ID=<Step_ID>
 
 ```powershell
 --special-process-rules "Defect Type1: STG01_STEP10, STG02_STEP10"
+```
+
+当前 process 聚合命令行参数：
+
+```powershell
+--process-aggregation stage_step
+--process-aggregation step
 ```
 
 ## 4. defect_worse_ui.py 结构
@@ -199,6 +231,7 @@ Button callback
 
 - `start_analysis()`：入口，校验 UI 状态并启动后台线程。
 - `_collect_analysis_options()`：从 UI 读取并校验参数；特殊 process rules 在这里解析，格式错误会提示用户。
+- `process_aggregation`：Run 页下拉框，默认 `Stage_ID + Step_ID`；选择 `Step_ID only` 时传给 `build_worse_tool_result(..., process_aggregation="step")`。
 - `_analysis_worker()`：调用 `build_worse_tool_result()` 和 `write_result_to_excel()`，然后重新加载 raw data 用于图表。
 - `_show_result_preview()`：显示前 500 行结果。
 

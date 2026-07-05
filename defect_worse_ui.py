@@ -14,7 +14,7 @@ from matplotlib.ticker import MaxNLocator
 
 from defect_worse_tool import (
     DEFAULT_SHEET_NAME,
-    SPECIAL_STAGE_ID,
+    STEP_ONLY_STAGE_ID,
     SpecialProcessRules,
     add_grouping_columns,
     build_worse_tool_result,
@@ -22,6 +22,9 @@ from defect_worse_tool import (
     filter_outliers_for_defect,
     parse_defect_columns,
     parse_special_process_rules,
+    normalize_process_aggregation,
+    PROCESS_AGGREGATION_STAGE_STEP,
+    PROCESS_AGGREGATION_STEP,
     read_table,
     validate_required_columns,
     write_result_to_excel,
@@ -35,7 +38,10 @@ DATA_FILE_TYPES = [
 ]
 
 STEP_ONLY_PREFIX = "Step-only | Step_ID="
-
+PROCESS_AGGREGATION_LABELS = {
+    "Stage_ID + Step_ID": PROCESS_AGGREGATION_STAGE_STEP,
+    "Step_ID only": PROCESS_AGGREGATION_STEP,
+}
 
 class DefectWorseToolApp(tk.Tk):
     def __init__(self) -> None:
@@ -54,6 +60,7 @@ class DefectWorseToolApp(tk.Tk):
         self.min_wafers = tk.IntVar(value=5)
         self.outlier_sigma = tk.DoubleVar(value=3.0)
         self.write_mode = tk.StringVar(value="append")
+        self.process_aggregation = tk.StringVar(value="Stage_ID + Step_ID")
 
         self.worse_path = tk.StringVar()
         self.defect_type = tk.StringVar()
@@ -80,6 +87,7 @@ class DefectWorseToolApp(tk.Tk):
         self._configure_style()
         self._build_ui()
         self.special_step_rules.trace_add("write", lambda *_: self._refresh_process_stage_options())
+        self.process_aggregation.trace_add("write", lambda *_: self._refresh_process_stage_options())
         self.after(150, self._poll_results)
 
     def _configure_style(self) -> None:
@@ -160,13 +168,24 @@ class DefectWorseToolApp(tk.Tk):
             controls, from_=0.1, to=20.0, increment=0.1, textvariable=self.outlier_sigma, width=10
         ).grid(row=4, column=4, sticky="ew")
 
+        ttk.Label(controls, text="Process aggregation", style="Card.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(10, 2)
+        )
+        ttk.Combobox(
+            controls,
+            textvariable=self.process_aggregation,
+            values=list(PROCESS_AGGREGATION_LABELS.keys()),
+            state="readonly",
+            width=18,
+        ).grid(row=6, column=0, sticky="ew", padx=(0, 10))
+
         ttk.Label(
             controls,
             text="Defect columns (comma-separated; leave blank for auto-detection)",
             style="Card.TLabel",
-        ).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 2))
+        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=(10, 2))
         ttk.Entry(controls, textvariable=self.defect_override).grid(
-            row=6, column=0, columnspan=4, sticky="ew", padx=(0, 12)
+            row=6, column=1, columnspan=3, sticky="ew", padx=(0, 12)
         )
         mode_frame = ttk.Frame(controls, style="Card.TFrame")
         mode_frame.grid(row=5, column=4, rowspan=2, sticky="nsew")
@@ -445,16 +464,17 @@ class DefectWorseToolApp(tk.Tk):
             messagebox.showwarning("Missing file", "Please select a raw defect data file first.")
             return
         sheet = self.input_sheet.get().strip() or None
+        process_aggregation = self._selected_process_aggregation()
         self._set_busy(True, "Loading raw data...")
-        threading.Thread(target=self._load_raw_worker, args=(path, sheet), daemon=True).start()
+        threading.Thread(target=self._load_raw_worker, args=(path, sheet, process_aggregation), daemon=True).start()
 
-    def _load_raw_worker(self, path: str, sheet: Optional[str]) -> None:
+    def _load_raw_worker(self, path: str, sheet: Optional[str], process_aggregation: str) -> None:
         try:
             df = read_table(path, sheet_name=sheet)
             validate_required_columns(df)
             df = add_grouping_columns(df)
             defects = detect_defect_columns(df)
-            stages = sorted(df["Process_Stage"].dropna().astype(str).unique().tolist())
+            stages = self._build_process_stage_values(df, process_aggregation)
             self.result_queue.put(("loaded", (df, defects, stages, list(df.columns))))
         except Exception as exc:
             self.result_queue.put(("error", exc))
@@ -488,6 +508,7 @@ class DefectWorseToolApp(tk.Tk):
         if multiplier <= 0 or min_wafers < 1 or sigma <= 0:
             raise ValueError("BSL multiplier and outlier sigma must be positive; minimum wafers must be at least 1.")
         special_process_rules = parse_special_process_rules(self.special_step_rules.get())
+        process_aggregation = self._selected_process_aggregation()
         output_sheet = self.output_sheet.get().strip()
         if not output_sheet:
             raise ValueError("Output sheet cannot be blank.")
@@ -502,6 +523,7 @@ class DefectWorseToolApp(tk.Tk):
             "min_wafers": min_wafers,
             "outlier_sigma": sigma,
             "special_process_rules": special_process_rules,
+            "process_aggregation": process_aggregation,
             "write_mode": self.write_mode.get(),
         }
 
@@ -516,6 +538,7 @@ class DefectWorseToolApp(tk.Tk):
                 min_wafers=options["min_wafers"],
                 outlier_sigma=options["outlier_sigma"],
                 special_process_rules=options["special_process_rules"],
+                process_aggregation=options["process_aggregation"],
             )
             output = write_result_to_excel(
                 result,
@@ -527,7 +550,7 @@ class DefectWorseToolApp(tk.Tk):
             validate_required_columns(raw)
             raw = add_grouping_columns(raw)
             defects = detect_defect_columns(raw, options["defect_columns"])
-            stages = sorted(raw["Process_Stage"].dropna().astype(str).unique().tolist())
+            stages = self._build_process_stage_values(raw, options["process_aggregation"])
             self.result_queue.put(
                 ("analysis_done", (result, output, raw, defects, stages, list(raw.columns)))
             )
@@ -538,11 +561,17 @@ class DefectWorseToolApp(tk.Tk):
         try:
             worse = pd.read_excel(path, sheet_name=sheet_name or 0)
             if "Stage_ID" in worse.columns and "Step_ID" in worse.columns:
-                values = (
-                    worse["Stage_ID"].astype(str).str.strip()
-                    + "_"
-                    + worse["Step_ID"].astype(str).str.strip()
-                ).unique().tolist()
+                if (worse["Stage_ID"].astype(str).str.strip() == STEP_ONLY_STAGE_ID).any():
+                    values = [
+                        self._format_step_only_option(step)
+                        for step in sorted(worse["Step_ID"].dropna().astype(str).str.strip().unique().tolist())
+                    ]
+                else:
+                    values = (
+                        worse["Stage_ID"].astype(str).str.strip()
+                        + "_"
+                        + worse["Step_ID"].astype(str).str.strip()
+                    ).unique().tolist()
                 if values:
                     self.stage_values = sorted(values)
                     self._refresh_process_stage_options()
@@ -641,6 +670,7 @@ class DefectWorseToolApp(tk.Tk):
             sigma = float(self.outlier_sigma.get())
             self._get_y_limits()
             special_rules = self._parse_special_step_rules_for_ui()
+            process_aggregation = self._selected_process_aggregation()
         except tk.TclError:
             messagebox.showwarning("Invalid setting", "Outlier sigma must be numeric.")
             return
@@ -650,7 +680,7 @@ class DefectWorseToolApp(tk.Tk):
         self.status.set("Preparing chart...")
         threading.Thread(
             target=self._plot_worker,
-            args=(defect, stage, self.chart_type.get(), time_col, sigma, special_rules),
+            args=(defect, stage, self.chart_type.get(), time_col, sigma, special_rules, process_aggregation),
             daemon=True,
         ).start()
 
@@ -661,14 +691,21 @@ class DefectWorseToolApp(tk.Tk):
         chart_type: str,
         time_col: str,
         sigma: float,
-            special_rules: SpecialProcessRules,
+        special_rules: SpecialProcessRules,
+        process_aggregation: str,
     ) -> None:
         try:
             assert self.raw_df is not None
             if time_col not in self.raw_df.columns:
                 raise ValueError("Selected time column does not exist: {}".format(time_col))
             df = filter_outliers_for_defect(self.raw_df, defect, outlier_sigma=sigma)
-            filter_label, df = self._filter_chart_process(df, defect, stage, special_rules)
+            filter_label, df = self._filter_chart_process(
+                df,
+                defect,
+                stage,
+                special_rules,
+                process_aggregation,
+            )
             if df.empty:
                 raise ValueError("No rows remain for this defect/process selection after outlier filtering.")
             if chart_type == "Box chart by tool":
@@ -768,6 +805,23 @@ class DefectWorseToolApp(tk.Tk):
     def _parse_special_step_rules_for_ui(self) -> SpecialProcessRules:
         return parse_special_process_rules(self.special_step_rules.get())
 
+    def _selected_process_aggregation(self) -> str:
+        label = self.process_aggregation.get().strip()
+        return normalize_process_aggregation(PROCESS_AGGREGATION_LABELS.get(label, label))
+
+    def _build_process_stage_values(
+        self,
+        df: pd.DataFrame,
+        process_aggregation: Optional[str] = None,
+    ) -> List[str]:
+        mode = normalize_process_aggregation(process_aggregation or PROCESS_AGGREGATION_STAGE_STEP)
+        if mode == PROCESS_AGGREGATION_STEP:
+            return [
+                self._format_step_only_option(step)
+                for step in sorted(df["Step_ID"].dropna().astype(str).str.strip().unique().tolist())
+            ]
+        return sorted(df["Process_Stage"].dropna().astype(str).unique().tolist())
+
     def _get_y_limits(self) -> Tuple[Optional[float], Optional[float]]:
         min_text = self.y_min.get().strip()
         max_text = self.y_max.get().strip()
@@ -796,8 +850,11 @@ class DefectWorseToolApp(tk.Tk):
         except ValueError:
             rules = {}
         defect_key = self.defect_type.get().strip().casefold()
-        special_steps = sorted(rules.get(defect_key, {}).keys())
-        values.extend([self._format_step_only_option(step) for step in special_steps])
+        if self._selected_process_aggregation() != PROCESS_AGGREGATION_STEP:
+            special_steps = sorted(rules.get(defect_key, {}).keys())
+            for value in [self._format_step_only_option(step) for step in special_steps]:
+                if value not in values:
+                    values.append(value)
         self.stage_combo["values"] = values
         if current in values:
             return
@@ -823,9 +880,14 @@ class DefectWorseToolApp(tk.Tk):
         defect: str,
         selected_process: str,
         special_rules: SpecialProcessRules,
+        process_aggregation: str,
     ) -> Tuple[str, pd.DataFrame]:
         step_only = self._parse_step_only_option(selected_process)
         if step_only:
+            if normalize_process_aggregation(process_aggregation) == PROCESS_AGGREGATION_STEP:
+                filtered = df.loc[df["Step_ID"].astype(str).str.strip() == step_only].copy()
+                label = "Step_ID={} (Stage ignored)".format(step_only)
+                return label, filtered
             defect_rules = special_rules.get(defect.strip().casefold(), {})
             if step_only not in defect_rules:
                 raise ValueError(
