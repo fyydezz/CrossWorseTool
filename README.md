@@ -58,9 +58,11 @@ BSL count
 2. `KE`、`KT` 开头的 `Equipment_ID` 按 `Equipment_ID + Chamber_ID` 聚合。
 3. 默认 process stage 使用 `Stage_ID + "_" + Step_ID`。
 4. 如果 `Process aggregation` 选择 `Step_ID only`，则忽略 `Stage_ID`，直接按 `Step_ID + tool/chamber` 聚合；输出中每个 Step_ID 的 worse tool 只列一次，`Stage_ID` 显示为 `ALL_STAGES`。
-5. 每个 defect 单独过滤高端 outlier，默认过滤 `mean + 3 * std` 以上的点。
-6. 每个 process/tool 组内 unique wafer 数小于 `Minimum wafers` 时过滤掉，默认 5。
-7. 组内平均值或中位数大于等于 `BSL count * BSL multiplier` 时输出，默认倍数 1.5。
+5. `Analysis data window` 可选择全部数据、近两周或近一周。窗口按输入数据中最大的 `Scan_Time` 往前回推，不按电脑当天日期计算。
+6. 每个 defect 单独过滤高端 outlier，默认过滤 `mean + 3 * std` 以上的点。
+7. 每个 process/tool 组内 unique wafer 数小于 `Minimum wafers` 时过滤掉，默认 5。
+8. 组内平均值或中位数大于等于 `BSL count * BSL multiplier` 时输出，默认倍数 1.5。
+9. 输出新增 `Recent Trimmed BSL`，基于当前分析窗口内该 defect 的全部数据，去掉上下各 5% 后取均值，用于观察近期 BSL 水平。
 
 ## 5. 特殊 Process 规则
 
@@ -94,16 +96,17 @@ python defect_worse_ui.py
 3. 指定输出 Excel 路径。
 4. 按需设置 input/output sheet、BSL multiplier、Minimum wafers、Outlier sigma。
 5. `Process aggregation` 默认 `Stage_ID + Step_ID`；如需跨 stage 按相同 recipe/tool 对比，选择 `Step_ID only`。
-6. `Defect columns` 可留空自动识别，也可逗号指定。
-7. `Special process rules` 可留空；需要特殊 Step-only 逻辑时按第 5 节格式填写。
-8. 选择写入模式：
+6. `Analysis data window` 默认 `Latest 2 weeks`，也可选 `Latest 1 week` 或 `All data`。
+7. `Defect columns` 可留空自动识别，也可逗号指定。
+8. `Special process rules` 可留空；需要特殊 Step-only 逻辑时按第 5 节格式填写。
+9. 选择写入模式：
    - `Append`：读取目标 sheet 历史结果并追加。
    - `Replace sheet`：只替换目标 sheet，保留 workbook 其他 sheet。
-8. 点击 `Run Worse Tool`。
+10. 点击 `Run Worse Tool`。
 
 ### Charts 页
 
-先加载 raw data，再选择 defect type、process stage、time column 和 chart type。
+先加载 raw data，再选择 defect type、process stage、time column、chart data window 和 chart type。`Chart data window` 支持 `All data`、`Latest 2 weeks`、`Latest 1 week`，同样按数据中最大的 `Scan_Time` 往前回推。
 
 图表类型：
 
@@ -133,11 +136,14 @@ python defect_worse_tool.py `
   --min-wafers 5 `
   --outlier-sigma 3.0 `
   --process-aggregation step `
+  --data-window 14d `
   --special-process-rules "Defect Type1: STG01_STEP10, STG02_STEP10" `
   --write-mode replace
 ```
 
 `--process-aggregation stage_step` 是默认模式，按 `Stage_ID + Step_ID` 计算；`--process-aggregation step` 会忽略 Stage，只按 Step_ID 计算和输出。
+
+`--data-window all` 使用全部数据；`--data-window 14d` 使用最新 Scan_Time 往前 14 天；`--data-window 7d` 使用最新 Scan_Time 往前 7 天。
 
 手动指定 defect 列：
 
@@ -161,6 +167,8 @@ Max_Count
 Wafer_Count
 Row_Count
 BSL Multiplier
+Recent Trimmed BSL
+Data Window
 Trigger
 ```
 

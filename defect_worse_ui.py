@@ -25,7 +25,11 @@ from defect_worse_tool import (
     normalize_process_aggregation,
     PROCESS_AGGREGATION_STAGE_STEP,
     PROCESS_AGGREGATION_STEP,
+    DATA_WINDOW_ALL,
+    DATA_WINDOW_14D,
+    DATA_WINDOW_7D,
     read_table,
+    filter_by_recent_scan_time,
     validate_required_columns,
     write_result_to_excel,
 )
@@ -41,6 +45,11 @@ STEP_ONLY_PREFIX = "Step-only | Step_ID="
 PROCESS_AGGREGATION_LABELS = {
     "Stage_ID + Step_ID": PROCESS_AGGREGATION_STAGE_STEP,
     "Step_ID only": PROCESS_AGGREGATION_STEP,
+}
+DATA_WINDOW_LABELS = {
+    "All data": DATA_WINDOW_ALL,
+    "Latest 2 weeks": DATA_WINDOW_14D,
+    "Latest 1 week": DATA_WINDOW_7D,
 }
 
 class DefectWorseToolApp(tk.Tk):
@@ -61,12 +70,14 @@ class DefectWorseToolApp(tk.Tk):
         self.outlier_sigma = tk.DoubleVar(value=3.0)
         self.write_mode = tk.StringVar(value="append")
         self.process_aggregation = tk.StringVar(value="Stage_ID + Step_ID")
+        self.analysis_data_window = tk.StringVar(value="Latest 2 weeks")
 
         self.worse_path = tk.StringVar()
         self.defect_type = tk.StringVar()
         self.process_stage = tk.StringVar()
         self.time_column = tk.StringVar(value="Scan_Time")
         self.chart_type = tk.StringVar(value="Box chart by tool")
+        self.chart_data_window = tk.StringVar(value="All data")
         self.special_step_rules = tk.StringVar()
         self.line_width = tk.DoubleVar(value=1.8)
         self.marker_size = tk.DoubleVar(value=4.0)
@@ -179,13 +190,24 @@ class DefectWorseToolApp(tk.Tk):
             width=18,
         ).grid(row=6, column=0, sticky="ew", padx=(0, 10))
 
+        ttk.Label(controls, text="Analysis data window", style="Card.TLabel").grid(
+            row=5, column=1, sticky="w", pady=(10, 2)
+        )
+        ttk.Combobox(
+            controls,
+            textvariable=self.analysis_data_window,
+            values=list(DATA_WINDOW_LABELS.keys()),
+            state="readonly",
+            width=18,
+        ).grid(row=6, column=1, sticky="ew", padx=(0, 10))
+
         ttk.Label(
             controls,
             text="Defect columns (comma-separated; leave blank for auto-detection)",
             style="Card.TLabel",
-        ).grid(row=5, column=1, columnspan=3, sticky="w", pady=(10, 2))
+        ).grid(row=5, column=2, columnspan=2, sticky="w", pady=(10, 2))
         ttk.Entry(controls, textvariable=self.defect_override).grid(
-            row=6, column=1, columnspan=3, sticky="ew", padx=(0, 12)
+            row=6, column=2, columnspan=2, sticky="ew", padx=(0, 12)
         )
         mode_frame = ttk.Frame(controls, style="Card.TFrame")
         mode_frame.grid(row=5, column=4, rowspan=2, sticky="nsew")
@@ -251,6 +273,8 @@ class DefectWorseToolApp(tk.Tk):
             "Mean_Count",
             "Median_Count",
             "Wafer_Count",
+            "Recent Trimmed BSL",
+            "Data Window",
             "Trigger",
         )
         self.result_tree = ttk.Treeview(result_card, columns=columns, show="headings")
@@ -341,7 +365,16 @@ class DefectWorseToolApp(tk.Tk):
         self.time_combo = ttk.Combobox(panel, textvariable=self.time_column, width=38)
         self.time_combo.grid(row=14, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=15, column=0, sticky="w")
+        ttk.Label(panel, text="Chart data window", style="Card.TLabel").grid(row=15, column=0, sticky="w")
+        ttk.Combobox(
+            panel,
+            textvariable=self.chart_data_window,
+            values=list(DATA_WINDOW_LABELS.keys()),
+            state="readonly",
+            width=38,
+        ).grid(row=16, column=0, sticky="ew", pady=(2, 7))
+
+        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=17, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_type,
@@ -353,10 +386,10 @@ class DefectWorseToolApp(tk.Tk):
             ],
             state="readonly",
             width=38,
-        ).grid(row=16, column=0, sticky="ew", pady=(2, 8))
+        ).grid(row=18, column=0, sticky="ew", pady=(2, 8))
 
         style_frame = ttk.LabelFrame(panel, text="Chart style", padding=7)
-        style_frame.grid(row=17, column=0, sticky="ew", pady=(0, 10))
+        style_frame.grid(row=19, column=0, sticky="ew", pady=(0, 10))
         style_frame.columnconfigure(1, weight=1)
         self._spin_row(style_frame, 0, "Line width", self.line_width, 0.5, 8.0, 0.2)
         self._spin_row(style_frame, 1, "Marker size", self.marker_size, 0.0, 12.0, 0.5)
@@ -382,9 +415,9 @@ class DefectWorseToolApp(tk.Tk):
         )
 
         ttk.Button(panel, text="Plot", style="Accent.TButton", command=self.start_plot).grid(
-            row=18, column=0, sticky="ew", pady=(0, 5)
+            row=20, column=0, sticky="ew", pady=(0, 5)
         )
-        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=19, column=0, sticky="ew")
+        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=21, column=0, sticky="ew")
 
         chart_frame = ttk.Frame(self.chart_tab, style="Card.TFrame", padding=8)
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -509,6 +542,7 @@ class DefectWorseToolApp(tk.Tk):
             raise ValueError("BSL multiplier and outlier sigma must be positive; minimum wafers must be at least 1.")
         special_process_rules = parse_special_process_rules(self.special_step_rules.get())
         process_aggregation = self._selected_process_aggregation()
+        data_window = self._selected_data_window(self.analysis_data_window)
         output_sheet = self.output_sheet.get().strip()
         if not output_sheet:
             raise ValueError("Output sheet cannot be blank.")
@@ -524,6 +558,7 @@ class DefectWorseToolApp(tk.Tk):
             "outlier_sigma": sigma,
             "special_process_rules": special_process_rules,
             "process_aggregation": process_aggregation,
+            "data_window": data_window,
             "write_mode": self.write_mode.get(),
         }
 
@@ -539,6 +574,7 @@ class DefectWorseToolApp(tk.Tk):
                 outlier_sigma=options["outlier_sigma"],
                 special_process_rules=options["special_process_rules"],
                 process_aggregation=options["process_aggregation"],
+                data_window=options["data_window"],
             )
             output = write_result_to_excel(
                 result,
@@ -671,6 +707,7 @@ class DefectWorseToolApp(tk.Tk):
             self._get_y_limits()
             special_rules = self._parse_special_step_rules_for_ui()
             process_aggregation = self._selected_process_aggregation()
+            chart_data_window = self._selected_data_window(self.chart_data_window)
         except tk.TclError:
             messagebox.showwarning("Invalid setting", "Outlier sigma must be numeric.")
             return
@@ -680,7 +717,16 @@ class DefectWorseToolApp(tk.Tk):
         self.status.set("Preparing chart...")
         threading.Thread(
             target=self._plot_worker,
-            args=(defect, stage, self.chart_type.get(), time_col, sigma, special_rules, process_aggregation),
+            args=(
+                defect,
+                stage,
+                self.chart_type.get(),
+                time_col,
+                sigma,
+                special_rules,
+                process_aggregation,
+                chart_data_window,
+            ),
             daemon=True,
         ).start()
 
@@ -693,12 +739,14 @@ class DefectWorseToolApp(tk.Tk):
         sigma: float,
         special_rules: SpecialProcessRules,
         process_aggregation: str,
+        chart_data_window: str,
     ) -> None:
         try:
             assert self.raw_df is not None
             if time_col not in self.raw_df.columns:
                 raise ValueError("Selected time column does not exist: {}".format(time_col))
-            df = filter_outliers_for_defect(self.raw_df, defect, outlier_sigma=sigma)
+            window_df = filter_by_recent_scan_time(self.raw_df, data_window=chart_data_window)
+            df = filter_outliers_for_defect(window_df, defect, outlier_sigma=sigma)
             filter_label, df = self._filter_chart_process(
                 df,
                 defect,
@@ -808,6 +856,10 @@ class DefectWorseToolApp(tk.Tk):
     def _selected_process_aggregation(self) -> str:
         label = self.process_aggregation.get().strip()
         return normalize_process_aggregation(PROCESS_AGGREGATION_LABELS.get(label, label))
+
+    def _selected_data_window(self, variable: tk.StringVar) -> str:
+        label = variable.get().strip()
+        return DATA_WINDOW_LABELS.get(label, label or DATA_WINDOW_ALL)
 
     def _build_process_stage_values(
         self,

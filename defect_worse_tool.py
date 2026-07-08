@@ -28,6 +28,14 @@ SpecialProcessRules = Dict[str, Dict[str, Optional[Set[str]]]]
 PROCESS_AGGREGATION_STAGE_STEP = "stage_step"
 PROCESS_AGGREGATION_STEP = "step"
 PROCESS_AGGREGATION_CHOICES = (PROCESS_AGGREGATION_STAGE_STEP, PROCESS_AGGREGATION_STEP)
+DATA_WINDOW_ALL = "all"
+DATA_WINDOW_14D = "14d"
+DATA_WINDOW_7D = "7d"
+DATA_WINDOW_CHOICES = (DATA_WINDOW_ALL, DATA_WINDOW_14D, DATA_WINDOW_7D)
+DATA_WINDOW_DAYS = {
+    DATA_WINDOW_14D: 14,
+    DATA_WINDOW_7D: 7,
+}
 
 
 def normalize_column_name(name: object) -> str:
@@ -282,6 +290,54 @@ def add_grouping_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def normalize_data_window(value: str) -> str:
+    normalized = str(value or DATA_WINDOW_ALL).strip().lower().replace("_", "").replace("-", "")
+    aliases = {
+        "all": DATA_WINDOW_ALL,
+        "full": DATA_WINDOW_ALL,
+        "latest14d": DATA_WINDOW_14D,
+        "14d": DATA_WINDOW_14D,
+        "2w": DATA_WINDOW_14D,
+        "twoweeks": DATA_WINDOW_14D,
+        "latest7d": DATA_WINDOW_7D,
+        "7d": DATA_WINDOW_7D,
+        "1w": DATA_WINDOW_7D,
+        "oneweek": DATA_WINDOW_7D,
+    }
+    if normalized not in aliases:
+        raise ValueError("data_window must be one of: {}".format(", ".join(DATA_WINDOW_CHOICES)))
+    return aliases[normalized]
+
+
+def filter_by_recent_scan_time(df: pd.DataFrame, data_window: str = DATA_WINDOW_ALL) -> pd.DataFrame:
+    window = normalize_data_window(data_window)
+    if window == DATA_WINDOW_ALL:
+        return df.copy()
+    parsed = pd.to_datetime(df["Scan_Time_Parsed"] if "Scan_Time_Parsed" in df.columns else df["Scan_Time"], errors="coerce")
+    valid = df.loc[parsed.notna()].copy()
+    if valid.empty:
+        raise ValueError("Scan_Time cannot be parsed for recent data filtering.")
+    valid["_Window_Scan_Time"] = parsed.loc[valid.index]
+    latest = valid["_Window_Scan_Time"].max()
+    cutoff = latest - pd.Timedelta(days=DATA_WINDOW_DAYS[window])
+    filtered = valid.loc[valid["_Window_Scan_Time"] >= cutoff].drop(columns=["_Window_Scan_Time"]).copy()
+    if filtered.empty:
+        raise ValueError("No rows remain after applying data window '{}'.".format(window))
+    return filtered
+
+
+def calculate_recent_trimmed_bsl(df: pd.DataFrame, defect_col: str) -> Optional[float]:
+    values = pd.to_numeric(df[defect_col], errors="coerce").dropna().astype(float)
+    if values.empty:
+        return None
+    lower = values.quantile(0.05)
+    upper = values.quantile(0.95)
+    trimmed = values.loc[(values >= lower) & (values <= upper)]
+    if trimmed.empty:
+        trimmed = values
+    return float(trimmed.mean())
+
+
 def filter_outliers_for_defect(
     df: pd.DataFrame,
     defect_col: str,
@@ -310,6 +366,8 @@ def summarize_one_defect(
     outlier_sigma: float = 3.0,
     special_process_rules: Optional[SpecialProcessRules] = None,
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
+    recent_trimmed_bsl: Optional[float] = None,
+    data_window: str = DATA_WINDOW_ALL,
 ) -> pd.DataFrame:
     filtered = filter_outliers_for_defect(df, defect_col, outlier_sigma=outlier_sigma)
     if filtered.empty:
@@ -373,6 +431,8 @@ def summarize_one_defect(
     grouped["Equipment ID"] = grouped["Equipment_Group"]
     grouped["Chamber ID"] = np.where(grouped["Group_Level"] == "Chamber", grouped["Chamber_Group"], "")
     grouped["BSL Multiplier"] = float(bsl_multiplier)
+    grouped["Recent Trimmed BSL"] = recent_trimmed_bsl
+    grouped["Data Window"] = normalize_data_window(data_window)
     grouped["Trigger"] = np.where(
         grouped["Median_Count"] >= grouped["BSL count"] * float(bsl_multiplier),
         "median",
@@ -392,6 +452,8 @@ def summarize_one_defect(
         "Wafer_Count",
         "Row_Count",
         "BSL Multiplier",
+        "Recent Trimmed BSL",
+        "Data Window",
         "Trigger",
     ]
     return grouped[output_cols].sort_values(
@@ -410,16 +472,19 @@ def build_worse_tool_result(
     outlier_sigma: float = 3.0,
     special_process_rules: Optional[SpecialProcessRules] = None,
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
+    data_window: str = DATA_WINDOW_ALL,
 ) -> pd.DataFrame:
     df = read_table(input_path, sheet_name=input_sheet)
     validate_required_columns(df)
     df = add_grouping_columns(df)
+    df = filter_by_recent_scan_time(df, data_window=data_window)
     defects = detect_defect_columns(df, defect_columns)
     bsl = read_bsl_table(bsl_path)
     stage_lookup, defect_lookup = build_bsl_lookup(bsl)
 
     pieces = []
     for defect in defects:
+        recent_trimmed_bsl = calculate_recent_trimmed_bsl(df, defect)
         piece = summarize_one_defect(
             df,
             defect,
@@ -430,6 +495,8 @@ def build_worse_tool_result(
             outlier_sigma=outlier_sigma,
             special_process_rules=special_process_rules,
             process_aggregation=process_aggregation,
+            recent_trimmed_bsl=recent_trimmed_bsl,
+            data_window=data_window,
         )
         if not piece.empty:
             pieces.append(piece)
@@ -449,6 +516,8 @@ def build_worse_tool_result(
                 "Wafer_Count",
                 "Row_Count",
                 "BSL Multiplier",
+                "Recent Trimmed BSL",
+                "Data Window",
                 "Trigger",
             ]
         )
@@ -574,6 +643,12 @@ def parse_args() -> argparse.Namespace:
         default=PROCESS_AGGREGATION_STAGE_STEP,
         help="Process grouping mode. stage_step keeps Stage_ID+Step_ID; step groups all stages by Step_ID only.",
     )
+    parser.add_argument(
+        "--data-window",
+        choices=DATA_WINDOW_CHOICES,
+        default=DATA_WINDOW_ALL,
+        help="Rows used for worse-tool calculation by latest Scan_Time. all, 14d, or 7d.",
+    )
     parser.add_argument("--bsl-multiplier", type=float, default=1.5, help="Flag threshold multiplier. Default: 1.5")
     parser.add_argument("--min-wafers", type=int, default=5, help="Minimum unique wafers per process-stage/tool group.")
     parser.add_argument("--outlier-sigma", type=float, default=3.0, help="Upper outlier cutoff in sigma. Default: 3.0")
@@ -598,6 +673,7 @@ def main() -> None:
         outlier_sigma=args.outlier_sigma,
         special_process_rules=parse_special_process_rules(args.special_process_rules),
         process_aggregation=args.process_aggregation,
+        data_window=args.data_window,
     )
     write_result_to_excel(
         result,
