@@ -40,6 +40,10 @@ DATA_FILE_TYPES = [
     ("Data files", "*.csv *.xlsx *.xlsm *.xls"),
     ("All files", "*.*"),
 ]
+IMAGE_FILE_TYPES = [
+    ("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+    ("All files", "*.*"),
+]
 
 STEP_ONLY_PREFIX = "Step-only | Step_ID="
 PROCESS_AGGREGATION_LABELS = {
@@ -64,6 +68,9 @@ class DefectWorseToolApp(tk.Tk):
         self.bsl_path = tk.StringVar()
         self.output_path = tk.StringVar()
         self.output_sheet = tk.StringVar(value=DEFAULT_SHEET_NAME)
+        self.ppt_output_path = tk.StringVar()
+        self.ppt_template_path = tk.StringVar()
+        self.ppt_input_image_path = tk.StringVar()
         self.defect_override = tk.StringVar()
         self.bsl_multiplier = tk.DoubleVar(value=1.5)
         self.min_wafers = tk.IntVar(value=5)
@@ -233,8 +240,12 @@ class DefectWorseToolApp(tk.Tk):
             style="Subtitle.TLabel",
         ).grid(row=9, column=0, columnspan=5, sticky="w", pady=(2, 0))
 
+        self._file_row(controls, 10, "PPT output path", self.ppt_output_path, self.browse_ppt_output)
+        self._file_row(controls, 11, "PPT template", self.ppt_template_path, self.browse_ppt_template)
+        self._file_row(controls, 12, "Input image", self.ppt_input_image_path, self.browse_ppt_image)
+
         action_frame = ttk.Frame(controls, style="Card.TFrame")
-        action_frame.grid(row=10, column=0, columnspan=5, sticky="ew", pady=(14, 0))
+        action_frame.grid(row=13, column=0, columnspan=5, sticky="ew", pady=(14, 0))
         action_frame.columnconfigure(0, weight=1)
         self.run_button = ttk.Button(
             action_frame,
@@ -471,6 +482,26 @@ class DefectWorseToolApp(tk.Tk):
         if path:
             self.output_path.set(path)
 
+    def browse_ppt_output(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pptx",
+            filetypes=[("PowerPoint presentation", "*.pptx")],
+        )
+        if path:
+            self.ppt_output_path.set(path)
+
+    def browse_ppt_template(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("PowerPoint presentation", "*.pptx *.pptm *.potx"), ("All files", "*.*")]
+        )
+        if path:
+            self.ppt_template_path.set(path)
+
+    def browse_ppt_image(self) -> None:
+        path = filedialog.askopenfilename(filetypes=IMAGE_FILE_TYPES)
+        if path:
+            self.ppt_input_image_path.set(path)
+
     def browse_worse(self) -> None:
         path = filedialog.askopenfilename(
             filetypes=[("Excel files", "*.xlsx *.xlsm *.xls"), ("All files", "*.*")]
@@ -629,22 +660,8 @@ class DefectWorseToolApp(tk.Tk):
     def start_ppt_generation(self) -> None:
         if self.busy:
             return
-        result_path = self.output_path.get().strip()
-        if not result_path or not Path(result_path).is_file():
-            messagebox.showwarning(
-                "Missing result",
-                "Run the worse-tool analysis or select an existing output Excel first.",
-            )
-            return
-        ppt_path = filedialog.asksaveasfilename(
-            defaultextension=".pptx",
-            filetypes=[("PowerPoint presentation", "*.pptx")],
-            initialfile=Path(result_path).stem + "_report.pptx",
-        )
-        if not ppt_path:
-            return
         try:
-            context = self._build_ppt_context(ppt_path)
+            context = self._build_ppt_context()
         except (ValueError, tk.TclError) as exc:
             messagebox.showwarning("Invalid PPT settings", str(exc))
             return
@@ -655,18 +672,29 @@ class DefectWorseToolApp(tk.Tk):
             daemon=True,
         ).start()
 
-    def _build_ppt_context(self, ppt_output_path: str) -> PPTGenerationContext:
+    def _build_ppt_context(self) -> PPTGenerationContext:
+        ppt_output_path = self.ppt_output_path.get().strip()
+        ppt_template_path = self.ppt_template_path.get().strip()
+        input_image_path = self.ppt_input_image_path.get().strip()
+        if not ppt_output_path:
+            raise ValueError("Choose a PPT output path.")
+        if Path(ppt_output_path).suffix.lower() != ".pptx":
+            raise ValueError("PPT output path must use the .pptx extension.")
+        if not ppt_template_path or not Path(ppt_template_path).is_file():
+            raise ValueError("Select a valid PPT template file.")
+        if not input_image_path or not Path(input_image_path).is_file():
+            raise ValueError("Select a valid input image file.")
+        Path(ppt_output_path).parent.mkdir(parents=True, exist_ok=True)
+
         raw_path = self.input_path.get().strip()
         result_path = self.output_path.get().strip()
-        if not raw_path or not Path(raw_path).is_file():
-            raise ValueError("A valid raw data file is required for PPT generation.")
-        if not result_path or not Path(result_path).is_file():
-            raise ValueError("A valid worse-tool result file is required for PPT generation.")
         return PPTGenerationContext(
+            ppt_output_path=ppt_output_path,
+            ppt_template_path=ppt_template_path,
+            input_image_path=input_image_path,
             raw_data_path=raw_path,
             bsl_path=self.bsl_path.get().strip(),
             worse_result_path=result_path,
-            ppt_output_path=ppt_output_path,
             input_sheet=self.input_sheet.get().strip() or None,
             result_sheet=self.output_sheet.get().strip() or DEFAULT_SHEET_NAME,
             defect_columns=parse_defect_columns(self.defect_override.get()),
@@ -679,9 +707,13 @@ class DefectWorseToolApp(tk.Tk):
 
     def _ppt_worker(self, context: PPTGenerationContext) -> None:
         try:
+            def log(message: str) -> None:
+                print("[PPT] {}".format(message), flush=True)
+                self.result_queue.put(("ppt_log", message))
+
             output = run_ppt_generation(
                 context,
-                log_callback=lambda message: self.result_queue.put(("ppt_log", message)),
+                log_callback=log,
             )
             output_path = Path(output)
             if not output_path.is_file():

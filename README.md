@@ -176,4 +176,16 @@ Trigger
 
 ## 9. PPT 接口
 
-`Run PPT Generator` 是预留接口。默认会提示尚未配置。复制到内网后，只需要修改 `ppt_integration.py` 中的 `run_ppt_generation()`，接入自己的 PPT 生成方法即可。
+`Run PPT Generator` 是预留接口。UI 中需要填写：
+
+- `PPT output path`
+- `PPT template`
+- `Input image`
+
+点击按钮后会在后台线程调用 `ppt_integration.py`，并把以上三个路径传给：
+
+```python
+run_external_ppt_method(ppt_output_path, ppt_template_path, input_image_path, log_callback)
+```
+
+默认实现会提示尚未配置。复制到内网后，只需要替换 `ppt_integration.py` 中的 `run_external_ppt_method()`，接入自己的 PPT 生成方法即可。运行过程中可调用 `log_callback("message")` 打印日志，日志会显示在 UI 状态栏并输出到控制台。
