@@ -40,10 +40,6 @@ DATA_FILE_TYPES = [
     ("Data files", "*.csv *.xlsx *.xlsm *.xls"),
     ("All files", "*.*"),
 ]
-IMAGE_FILE_TYPES = [
-    ("Image files", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-    ("All files", "*.*"),
-]
 
 STEP_ONLY_PREFIX = "Step-only | Step_ID="
 PROCESS_AGGREGATION_LABELS = {
@@ -242,7 +238,13 @@ class DefectWorseToolApp(tk.Tk):
 
         self._file_row(controls, 10, "PPT output path", self.ppt_output_path, self.browse_ppt_output)
         self._file_row(controls, 11, "PPT template", self.ppt_template_path, self.browse_ppt_template)
-        self._file_row(controls, 12, "Input image", self.ppt_input_image_path, self.browse_ppt_image)
+        self._file_row(
+            controls,
+            12,
+            "Input image folder",
+            self.ppt_input_image_path,
+            self.browse_ppt_image,
+        )
 
         action_frame = ttk.Frame(controls, style="Card.TFrame")
         action_frame.grid(row=13, column=0, columnspan=5, sticky="ew", pady=(14, 0))
@@ -498,7 +500,7 @@ class DefectWorseToolApp(tk.Tk):
             self.ppt_template_path.set(path)
 
     def browse_ppt_image(self) -> None:
-        path = filedialog.askopenfilename(filetypes=IMAGE_FILE_TYPES)
+        path = filedialog.askdirectory(title="Select input image folder")
         if path:
             self.ppt_input_image_path.set(path)
 
@@ -682,8 +684,8 @@ class DefectWorseToolApp(tk.Tk):
             raise ValueError("PPT output path must use the .pptx extension.")
         if not ppt_template_path or not Path(ppt_template_path).is_file():
             raise ValueError("Select a valid PPT template file.")
-        if not input_image_path or not Path(input_image_path).is_file():
-            raise ValueError("Select a valid input image file.")
+        if not input_image_path or not Path(input_image_path).is_dir():
+            raise ValueError("Select a valid input image folder.")
         Path(ppt_output_path).parent.mkdir(parents=True, exist_ok=True)
 
         raw_path = self.input_path.get().strip()

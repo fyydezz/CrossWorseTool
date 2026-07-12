@@ -41,10 +41,10 @@ def run_external_ppt_method(
     these three paths from the PPT controls:
     - ppt_output_path
     - ppt_template_path
-    - input_image_path
+    - input_image_path (directory containing the source images)
     """
     if log_callback is not None:
-        log_callback("External PPT method received output/template/image paths.")
+        log_callback("External PPT method received output/template/image-folder paths.")
     raise NotImplementedError(
         "External PPT method is not configured. Replace run_external_ppt_method() "
         "in ppt_integration.py with your PPT generation implementation."
@@ -66,7 +66,7 @@ def run_ppt_generation(
         log_callback("PPT integration was called.")
         log_callback("Output PPT: {}".format(context.ppt_output_path))
         log_callback("Template PPT: {}".format(context.ppt_template_path))
-        log_callback("Input image: {}".format(context.input_image_path))
+        log_callback("Input image folder: {}".format(context.input_image_path))
 
     return run_external_ppt_method(
         ppt_output_path=context.ppt_output_path,

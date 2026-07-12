@@ -19,6 +19,12 @@ REQUIRED_COLUMNS = [
 ]
 
 REQUIRED_COLUMN_LOOKUP = {column.upper(): column for column in REQUIRED_COLUMNS}
+REQUIRED_COLUMN_LOOKUP.update(
+    {
+        "STAGE": "Stage_ID",
+        "CHAMBER": "Chamber_ID",
+    }
+)
 WHOLE_TOOL_PREFIXES = ("KP", "KD", "KW")
 CHAMBER_PREFIXES = ("KE", "KT")
 DEFAULT_SHEET_NAME = "worse_tool"
@@ -51,7 +57,7 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if len(normalized) != len(set(normalized)):
         duplicates = sorted({name for name in normalized if normalized.count(name) > 1})
         raise ValueError(
-            "Duplicate column(s) after case normalization: {}".format(", ".join(duplicates))
+            "Duplicate column(s) after header normalization: {}".format(", ".join(duplicates))
         )
     df.columns = normalized
     return df
