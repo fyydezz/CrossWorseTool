@@ -10,6 +10,7 @@ from typing import List, Optional, Sequence, Tuple
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
 from defect_worse_tool import (
@@ -1011,56 +1012,66 @@ class DefectWorseToolApp(tk.Tk):
             values = pd.to_numeric(part[defect], errors="coerce").dropna()
             if len(values) > 0:
                 grouped_parts.append(
-                    (str(tool), values.values, len(values), float(values.median()), float(values.mean()))
+                    (
+                        str(tool),
+                        self._display_tool_label(part, str(tool)),
+                        values.values,
+                        len(values),
+                        float(values.median()),
+                        float(values.mean()),
+                    )
                 )
-        grouped_parts.sort(key=lambda item: item[3], reverse=True)
+        grouped_parts.sort(key=lambda item: item[4], reverse=True)
         if not grouped_parts:
             messagebox.showerror("Plot failed", "No numeric values to plot.")
             return
-        full_labels = [item[0] for item in grouped_parts]
+        full_labels = [item[1] for item in grouped_parts]
         compact_labels = len(grouped_parts) > 12
         labels = ["T{}".format(index) for index in range(1, len(grouped_parts) + 1)] if compact_labels else full_labels
-        groups = [item[1] for item in grouped_parts]
-        counts = [item[2] for item in grouped_parts]
-        medians = [item[3] for item in grouped_parts]
-        means = [item[4] for item in grouped_parts]
-        palette = self._colors(len(groups))
+        groups = [item[2] for item in grouped_parts]
+        counts = [item[3] for item in grouped_parts]
+        medians = [item[4] for item in grouped_parts]
+        means = [item[5] for item in grouped_parts]
+        box_color = "#6E9F8F"
+        ax.set_facecolor("#FBFAF7")
+        self.fig.patch.set_facecolor("#F4F1EA")
         box = ax.boxplot(
             groups,
             labels=labels,
             showmeans=True,
             patch_artist=True,
             widths=0.58,
-            medianprops={"color": "#111111", "linewidth": 1.8},
+            medianprops={"color": "#C23B22", "linewidth": 2.2},
             meanprops={
                 "marker": "D",
-                "markerfacecolor": "#FFFFFF",
-                "markeredgecolor": "#111111",
+                "markerfacecolor": "#F2B134",
+                "markeredgecolor": "#263238",
                 "markersize": 5,
             },
-            whiskerprops={"color": "#4B5563", "linewidth": 1.1},
-            capprops={"color": "#4B5563", "linewidth": 1.1},
+            whiskerprops={"color": "#52606D", "linewidth": 1.1},
+            capprops={"color": "#52606D", "linewidth": 1.1},
             flierprops={
                 "marker": "o",
-                "markerfacecolor": "#B91C1C",
-                "markeredgecolor": "#B91C1C",
+                "markerfacecolor": "#C23B22",
+                "markeredgecolor": "none",
                 "markersize": 3,
-                "alpha": 0.45,
+                "alpha": 0.35,
             },
         )
-        for patch, color in zip(box["boxes"], palette):
-            patch.set_facecolor(color)
-            patch.set_alpha(0.56)
-            patch.set_edgecolor("#1F2937")
+        for patch in box["boxes"]:
+            patch.set_facecolor(box_color)
+            patch.set_alpha(0.72)
+            patch.set_edgecolor("#294C46")
+            patch.set_linewidth(1.1)
         for index, values in enumerate(groups, start=1):
             ax.scatter(
                 self._jitter_positions(index, len(values)),
                 values,
                 s=14,
-                color=palette[index - 1],
+                color=box_color,
                 edgecolors="#FFFFFF",
                 linewidths=0.35,
-                alpha=0.68,
+                alpha=0.55,
                 zorder=3,
             )
             top = max(values)
@@ -1075,35 +1086,43 @@ class DefectWorseToolApp(tk.Tk):
                 ha="center",
                 va="bottom",
                 fontsize=7 if compact_labels else 8,
-                color="#374151",
+                color="#37474F",
             )
-            ax.scatter(
-                [index],
-                [means[index - 1]],
-                marker="D",
-                s=28,
-                color="#FFFFFF",
-                edgecolors="#111111",
-                linewidths=0.9,
-                zorder=4,
-            )
-            ax.scatter(
-                [index],
-                [medians[index - 1]],
-                marker="_",
-                s=180,
-                color="#111111",
-                linewidths=1.5,
-                zorder=4,
-            )
-        ax.set_title("{} | {} | Box by tool/chamber".format(defect, stage))
-        ax.set_xlabel("Tool group")
+        ax.set_title("{} | {} | Box by chamber/equipment".format(defect, stage))
+        ax.set_xlabel("Chamber / Equipment ID")
         ax.set_ylabel("Defect count")
         ax.tick_params(axis="x", rotation=0 if compact_labels else 45)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
-        ax.grid(True, axis="y", color="#D7DEE8", linewidth=0.7, alpha=0.8)
+        ax.grid(True, axis="y", color="#D7D4CC", linewidth=0.7, alpha=0.7)
         ax.set_axisbelow(True)
         ax.margins(y=0.14)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.legend(
+            handles=[
+                Line2D([0], [0], color="#C23B22", linewidth=2.2, label="Median"),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="D",
+                    color="none",
+                    markerfacecolor="#F2B134",
+                    markeredgecolor="#263238",
+                    label="Mean",
+                ),
+                Line2D(
+                    [0],
+                    [0],
+                    marker="o",
+                    color="none",
+                    markerfacecolor=box_color,
+                    markeredgecolor="#FFFFFF",
+                    label="Raw data",
+                ),
+            ],
+            loc="upper right",
+            frameon=False,
+        )
         if compact_labels:
             mapping_lines = [
                 "{} = {} | med {:.2f} | avg {:.2f}".format(label, tool, median, mean)
@@ -1150,7 +1169,7 @@ class DefectWorseToolApp(tk.Tk):
                 markersize=self.marker_size.get(),
                 linewidth=self.line_width.get(),
                 color=color,
-                label=str(tool),
+                label=self._display_tool_label(part, str(tool)),
             )
         ax.set_title("{} | {} | Trend overlay by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
@@ -1183,7 +1202,7 @@ class DefectWorseToolApp(tk.Tk):
                 markersize=self.marker_size.get(),
                 linewidth=self.line_width.get(),
                 color=color,
-                label=str(tool),
+                label=self._display_tool_label(part, str(tool)),
             )
         ax.set_title("{} | {} | All chambers trend by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
@@ -1227,11 +1246,13 @@ class DefectWorseToolApp(tk.Tk):
                 markersize=self.marker_size.get(),
                 linewidth=self.line_width.get(),
                 color=color,
-                label=str(tool),
+                label=self._display_tool_label(part, str(tool)),
             )
             x_positions.extend(xs)
             x_labels.extend(part["Selected_Time"].dt.strftime("%m-%d %H:%M").tolist())
-            tool_labels.append((sum(xs) / float(len(xs)), str(tool), color))
+            tool_labels.append(
+                (sum(xs) / float(len(xs)), self._display_tool_label(part, str(tool)), color)
+            )
             current_x += len(part) + 1
             if index < len(groups) - 1:
                 boundaries.append(current_x - 0.5)
@@ -1288,6 +1309,16 @@ class DefectWorseToolApp(tk.Tk):
             .sort_values(["Equipment_Group", "Chamber_Group", "Tool_Group"])
         )
         return order["Tool_Group"].astype(str).tolist()
+
+    def _display_tool_label(self, part: pd.DataFrame, fallback: str) -> str:
+        if part.empty:
+            return fallback
+        row = part.iloc[0]
+        if str(row.get("Group_Level", "")).strip().casefold() == "chamber":
+            chamber = str(row.get("Chamber_Group", "")).strip()
+            return chamber or fallback
+        equipment = str(row.get("Equipment_Group", "")).strip()
+        return equipment or fallback
 
     def _colors(self, count: int) -> List[object]:
         if count <= 0:
