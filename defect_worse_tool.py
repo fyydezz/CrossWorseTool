@@ -159,16 +159,29 @@ def read_bsl_table(path: str) -> pd.DataFrame:
 def build_bsl_lookup(bsl: pd.DataFrame) -> Tuple[Dict[Tuple[str, str, str], float], Dict[str, float]]:
     stage_lookup: Dict[Tuple[str, str, str], float] = {}
     defect_lookup: Dict[str, float] = {}
+    has_process_columns = "Stage_ID" in bsl.columns and "Step_ID" in bsl.columns
 
     for _, row in bsl.iterrows():
         defect = str(row["Defect type"]).strip().casefold()
         bsl_value = float(row["BSL count"])
-        defect_lookup[defect] = bsl_value
-        if "Stage_ID" in bsl.columns and "Step_ID" in bsl.columns:
+        if has_process_columns:
             stage = "" if pd.isna(row.get("Stage_ID")) else str(row.get("Stage_ID")).strip()
             step = "" if pd.isna(row.get("Step_ID")) else str(row.get("Step_ID")).strip()
             if stage and step:
-                stage_lookup[(defect, stage, step)] = bsl_value
+                key = (defect, stage, step)
+                if key in stage_lookup and not np.isclose(stage_lookup[key], bsl_value):
+                    raise ValueError(
+                        "Conflicting BSL values for defect/stage/step: {} / {} / {}.".format(
+                            row["Defect type"], stage, step
+                        )
+                    )
+                stage_lookup[key] = bsl_value
+                continue
+        if defect in defect_lookup and not np.isclose(defect_lookup[defect], bsl_value):
+            raise ValueError(
+                "Conflicting global BSL values for defect: {}.".format(row["Defect type"])
+            )
+        defect_lookup[defect] = bsl_value
     return stage_lookup, defect_lookup
 
 

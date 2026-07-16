@@ -18,6 +18,8 @@ from defect_worse_tool import (
     STEP_ONLY_STAGE_ID,
     SpecialProcessRules,
     add_grouping_columns,
+    apply_process_aggregation,
+    apply_special_process_rules,
     build_worse_tool_result,
     detect_defect_columns,
     filter_outliers_for_defect,
@@ -52,6 +54,14 @@ DATA_WINDOW_LABELS = {
     "Latest 2 weeks": DATA_WINDOW_14D,
     "Latest 1 week": DATA_WINDOW_7D,
 }
+DATA_WINDOW_VALUE_LABELS = {value: label for label, value in DATA_WINDOW_LABELS.items()}
+CHART_GROUP_MODE_CHAMBER = "By Chamber"
+CHART_GROUP_MODE_EQUIPMENT = "By Equipment ID"
+CHART_GROUP_MODES = (CHART_GROUP_MODE_CHAMBER, CHART_GROUP_MODE_EQUIPMENT)
+CHART_TYPE_BOX = "Box chart by selected group"
+CHART_TYPE_TREND = "Trend overlay by time"
+CHART_TYPE_ALL_GROUPS = "Trend all groups same axis"
+CHART_TYPE_SEQUENCE = "Sequential trend by selected group"
 
 class DefectWorseToolApp(tk.Tk):
     def __init__(self) -> None:
@@ -80,8 +90,9 @@ class DefectWorseToolApp(tk.Tk):
         self.defect_type = tk.StringVar()
         self.process_stage = tk.StringVar()
         self.time_column = tk.StringVar(value="Scan_Time")
-        self.chart_type = tk.StringVar(value="Box chart by tool")
-        self.chart_data_window = tk.StringVar(value="All data")
+        self.chart_type = tk.StringVar(value=CHART_TYPE_BOX)
+        self.chart_data_window = tk.StringVar(value="Latest 2 weeks")
+        self.chart_group_mode = tk.StringVar(value=CHART_GROUP_MODE_CHAMBER)
         self.special_step_rules = tk.StringVar()
         self.line_width = tk.DoubleVar(value=1.8)
         self.marker_size = tk.DoubleVar(value=4.0)
@@ -388,22 +399,31 @@ class DefectWorseToolApp(tk.Tk):
             width=38,
         ).grid(row=16, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Label(panel, text="Chart grouping", style="Card.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Combobox(
+            panel,
+            textvariable=self.chart_group_mode,
+            values=CHART_GROUP_MODES,
+            state="readonly",
+            width=38,
+        ).grid(row=18, column=0, sticky="ew", pady=(2, 7))
+
+        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=19, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_type,
             values=[
-                "Box chart by tool",
-                "Trend overlay by time",
-                "Trend all chambers same axis",
-                "Sequential trend by tool",
+                CHART_TYPE_BOX,
+                CHART_TYPE_TREND,
+                CHART_TYPE_ALL_GROUPS,
+                CHART_TYPE_SEQUENCE,
             ],
             state="readonly",
             width=38,
-        ).grid(row=18, column=0, sticky="ew", pady=(2, 8))
+        ).grid(row=20, column=0, sticky="ew", pady=(2, 8))
 
         style_frame = ttk.LabelFrame(panel, text="Chart style", padding=7)
-        style_frame.grid(row=19, column=0, sticky="ew", pady=(0, 10))
+        style_frame.grid(row=21, column=0, sticky="ew", pady=(0, 10))
         style_frame.columnconfigure(1, weight=1)
         self._spin_row(style_frame, 0, "Line width", self.line_width, 0.5, 8.0, 0.2)
         self._spin_row(style_frame, 1, "Marker size", self.marker_size, 0.0, 12.0, 0.5)
@@ -429,9 +449,9 @@ class DefectWorseToolApp(tk.Tk):
         )
 
         ttk.Button(panel, text="Plot", style="Accent.TButton", command=self.start_plot).grid(
-            row=20, column=0, sticky="ew", pady=(0, 5)
+            row=22, column=0, sticky="ew", pady=(0, 5)
         )
-        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=21, column=0, sticky="ew")
+        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=23, column=0, sticky="ew")
 
         chart_frame = ttk.Frame(self.chart_tab, style="Card.TFrame", padding=8)
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -622,7 +642,10 @@ class DefectWorseToolApp(tk.Tk):
             defects = detect_defect_columns(raw, options["defect_columns"])
             stages = self._build_process_stage_values(raw, options["process_aggregation"])
             self.result_queue.put(
-                ("analysis_done", (result, output, raw, defects, stages, list(raw.columns)))
+                (
+                    "analysis_done",
+                    (result, output, raw, defects, stages, list(raw.columns), options["data_window"]),
+                )
             )
         except Exception as exc:
             self.result_queue.put(("error", exc))
@@ -743,6 +766,9 @@ class DefectWorseToolApp(tk.Tk):
             special_rules = self._parse_special_step_rules_for_ui()
             process_aggregation = self._selected_process_aggregation()
             chart_data_window = self._selected_data_window(self.chart_data_window)
+            chart_group_mode = self.chart_group_mode.get().strip()
+            if chart_group_mode not in CHART_GROUP_MODES:
+                raise ValueError("Choose either By Chamber or By Equipment ID for chart grouping.")
         except tk.TclError:
             messagebox.showwarning("Invalid setting", "Outlier sigma must be numeric.")
             return
@@ -761,6 +787,7 @@ class DefectWorseToolApp(tk.Tk):
                 special_rules,
                 process_aggregation,
                 chart_data_window,
+                chart_group_mode,
             ),
             daemon=True,
         ).start()
@@ -775,6 +802,7 @@ class DefectWorseToolApp(tk.Tk):
         special_rules: SpecialProcessRules,
         process_aggregation: str,
         chart_data_window: str,
+        chart_group_mode: str,
     ) -> None:
         try:
             assert self.raw_df is not None
@@ -789,9 +817,14 @@ class DefectWorseToolApp(tk.Tk):
                 special_rules,
                 process_aggregation,
             )
+            df = self._filter_chart_group_mode(df, chart_group_mode)
             if df.empty:
-                raise ValueError("No rows remain for this defect/process selection after outlier filtering.")
-            if chart_type == "Box chart by tool":
+                raise ValueError(
+                    "No rows remain for this defect/process selection in chart mode '{}'.".format(
+                        chart_group_mode
+                    )
+                )
+            if chart_type == CHART_TYPE_BOX:
                 self.result_queue.put(("box", (defect, filter_label, df)))
                 return
             df["Selected_Time"] = pd.to_datetime(df[time_col], errors="coerce")
@@ -807,9 +840,9 @@ class DefectWorseToolApp(tk.Tk):
             )
             if trend.empty:
                 raise ValueError("{} cannot be parsed for trend chart.".format(time_col))
-            if chart_type == "Trend all chambers same axis":
+            if chart_type == CHART_TYPE_ALL_GROUPS:
                 kind = "trend_all_chambers"
-            elif chart_type == "Sequential trend by tool":
+            elif chart_type == CHART_TYPE_SEQUENCE:
                 kind = "trend_sequence_by_tool"
             else:
                 kind = "trend"
@@ -841,9 +874,10 @@ class DefectWorseToolApp(tk.Tk):
                         ),
                     )
                 elif kind == "analysis_done":
-                    result, output, df, defects, stages, columns = payload
+                    result, output, df, defects, stages, columns, data_window = payload
                     self.last_result = result
                     self.worse_path.set(str(output))
+                    self.chart_data_window.set(DATA_WINDOW_VALUE_LABELS[data_window])
                     self._apply_loaded_data(df, defects, stages, columns)
                     self._show_result_preview(result)
                     self._set_busy(
@@ -969,27 +1003,38 @@ class DefectWorseToolApp(tk.Tk):
         special_rules: SpecialProcessRules,
         process_aggregation: str,
     ) -> Tuple[str, pd.DataFrame]:
+        adjusted = apply_special_process_rules(
+            df,
+            defect,
+            special_process_rules=special_rules,
+        )
+        adjusted = apply_process_aggregation(adjusted, process_aggregation)
         step_only = self._parse_step_only_option(selected_process)
         if step_only:
-            if normalize_process_aggregation(process_aggregation) == PROCESS_AGGREGATION_STEP:
-                filtered = df.loc[df["Step_ID"].astype(str).str.strip() == step_only].copy()
-                label = "Step_ID={} (Stage ignored)".format(step_only)
-                return label, filtered
-            defect_rules = special_rules.get(defect.strip().casefold(), {})
-            if step_only not in defect_rules:
+            expected_stage = "{}{}".format(STEP_ONLY_PREFIX, step_only)
+            filtered = adjusted.loc[
+                adjusted["Process_Stage"].astype(str).str.strip() == expected_stage
+            ].copy()
+            if filtered.empty and normalize_process_aggregation(process_aggregation) != PROCESS_AGGREGATION_STEP:
                 raise ValueError(
                     "Step-only process '{}' is not configured for defect '{}'.".format(step_only, defect)
                 )
-            mask = df["Step_ID"].astype(str).str.strip() == step_only
-            stage_set = defect_rules.get(step_only)
-            if stage_set is not None:
-                mask = mask & df["Stage_ID"].astype(str).str.strip().isin(stage_set)
-            filtered = df.loc[mask].copy()
             label = "Step_ID={} (Stage ignored)".format(step_only)
             return label, filtered
 
-        filtered = df.loc[df["Process_Stage"].astype(str) == selected_process].copy()
+        filtered = adjusted.loc[adjusted["Process_Stage"].astype(str) == selected_process].copy()
         return selected_process, filtered
+
+    def _filter_chart_group_mode(self, df: pd.DataFrame, chart_group_mode: str) -> pd.DataFrame:
+        if chart_group_mode == CHART_GROUP_MODE_CHAMBER:
+            target_level = "Chamber"
+        elif chart_group_mode == CHART_GROUP_MODE_EQUIPMENT:
+            target_level = "Equipment"
+        else:
+            raise ValueError("Unsupported chart grouping mode: {}".format(chart_group_mode))
+        return df.loc[
+            df["Group_Level"].astype(str).str.strip().str.casefold() == target_level.casefold()
+        ].copy()
 
     def _show_result_preview(self, result: pd.DataFrame) -> None:
         for item in self.result_tree.get_children():
@@ -1088,8 +1133,9 @@ class DefectWorseToolApp(tk.Tk):
                 fontsize=7 if compact_labels else 8,
                 color="#37474F",
             )
-        ax.set_title("{} | {} | Box by chamber/equipment".format(defect, stage))
-        ax.set_xlabel("Chamber / Equipment ID")
+        group_label = self._chart_group_label(df)
+        ax.set_title("{} | {} | Box by {}".format(defect, stage, group_label))
+        ax.set_xlabel(group_label)
         ax.set_ylabel("Defect count")
         ax.tick_params(axis="x", rotation=0 if compact_labels else 45)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
@@ -1204,7 +1250,7 @@ class DefectWorseToolApp(tk.Tk):
                 color=color,
                 label=self._display_tool_label(part, str(tool)),
             )
-        ax.set_title("{} | {} | All chambers trend by {}".format(defect, stage, time_col))
+        ax.set_title("{} | {} | All groups trend by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
         ax.set_ylabel("Mean defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
@@ -1215,7 +1261,7 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.autofmt_xdate()
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("All-chamber trend rendered on one axis. Groups: {}".format(len(groups)))
+        self.status.set("All-group trend rendered on one axis. Groups: {}".format(len(groups)))
 
     def _draw_trend_sequence_by_tool(
         self,
@@ -1291,8 +1337,8 @@ class DefectWorseToolApp(tk.Tk):
         shown_labels = x_labels[::tick_step]
         ax.set_xticks(shown_positions)
         ax.set_xticklabels(shown_labels, rotation=55, ha="right", fontsize=8)
-        ax.set_title("{} | {} | Sequential trend by tool".format(defect, stage))
-        ax.set_xlabel("{} sorted within each tool, tools appended left to right".format(time_col))
+        ax.set_title("{} | {} | Sequential trend by selected group".format(defect, stage))
+        ax.set_xlabel("{} sorted within each group, groups appended left to right".format(time_col))
         ax.set_ylabel("Mean defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7DEE8", linewidth=0.7, alpha=0.8)
@@ -1319,6 +1365,11 @@ class DefectWorseToolApp(tk.Tk):
             return chamber or fallback
         equipment = str(row.get("Equipment_Group", "")).strip()
         return equipment or fallback
+
+    def _chart_group_label(self, part: pd.DataFrame) -> str:
+        if not part.empty and str(part.iloc[0].get("Group_Level", "")).strip().casefold() == "chamber":
+            return "Chamber"
+        return "Equipment ID"
 
     def _colors(self, count: int) -> List[object]:
         if count <= 0:

@@ -106,14 +106,16 @@ python defect_worse_ui.py
 
 ### Charts 页
 
-先加载 raw data，再选择 defect type、process stage、time column、chart data window 和 chart type。`Chart data window` 支持 `All data`、`Latest 2 weeks`、`Latest 1 week`，同样按数据中最大的 `Scan_Time` 往前回推。
+先加载 raw data，再选择 defect type、process stage、time column、chart data window、chart grouping 和 chart type。`Chart data window` 默认 `Latest 2 weeks`，也支持 `All data`、`Latest 1 week`，同样按数据中最大的 `Scan_Time` 往前回推。运行 Worse Tool 后，Chart data window 会自动同步为本次分析使用的窗口。
+
+`Chart grouping` 必须二选一：`By Chamber` 只显示 chamber-level 数据，`By Equipment ID` 只显示 equipment-level 数据，两类 tool 不会混在同一张图中。
 
 图表类型：
 
-- `Box chart by tool`：按 tool/chamber 展示 box plot。tool 数很多时自动使用 `T1/T2/...` 编号，并在右侧显示编号映射；图上显示 `n`、`med`、`avg`。
+- `Box chart by selected group`：按选定的 Chamber 或 Equipment ID 展示 box plot。group 数很多时自动使用 `T1/T2/...` 编号，并在右侧显示映射；图上显示 raw data、`n`、`med`、`avg`。
 - `Trend overlay by time`：所有 tool/chamber 按真实时间叠加到同一坐标系。
-- `Trend all chambers same axis`：所有 chamber 放在同一个坐标系对比。
-- `Sequential trend by tool`：第一个 tool 按时间排序画完后接第二个 tool，再接第三个 tool；所有 tool 共用同一个 Y 轴，方便比较。
+- `Trend all groups same axis`：所有选定类型的 group 放在同一个坐标系对比。
+- `Sequential trend by selected group`：第一个 group 按时间排序画完后接第二个 group，再接第三个 group；所有 group 共用同一个 Y 轴，方便比较。
 
 Chart style 支持：
 

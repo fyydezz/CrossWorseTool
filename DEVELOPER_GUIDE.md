@@ -244,6 +244,8 @@ Button callback
 图表方法：
 
 - `_draw_box()`：Box chart。tool 数量多于 12 时自动用 `T1/T2/...` 短标签，并在右侧显示映射；图上显示 `n`、`med`、`avg`。
+- `_filter_chart_group_mode()`：根据 UI 选择只保留 `Group_Level=Chamber` 或 `Group_Level=Equipment`，防止两类分组混在同一张图。
+- `_filter_chart_process()`：直接复用核心层的 `apply_special_process_rules()` 和 `apply_process_aggregation()`，保证 special process 的 Chart 与 Worse Tool 使用同一批数据。
 - `_draw_trend()`：普通真实时间 trend overlay。
 - `_draw_trend_all_chambers()`：所有 chamber 同坐标系 trend。
 - `_draw_trend_sequence_by_tool()`：按 tool 分段拼接的 trend。每个 tool 内按时间排序，tool 之间加虚线分隔，Y 轴共用。
