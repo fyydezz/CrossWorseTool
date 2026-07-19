@@ -40,7 +40,7 @@ CSV/Excel
   -> read_bsl_table()
   -> build_bsl_lookup()
   -> 每个 defect 调用 summarize_one_defect()
-  -> filter_outliers_for_defect()
+  -> handle_outliers_for_defect()
   -> apply_special_process_rules()
   -> apply_process_aggregation()
   -> groupby + wafer/BSL/threshold 筛选
@@ -87,15 +87,15 @@ CHAMBER_PREFIXES = ("KE", "KT")
 
 非 chamber 前缀默认按整机聚合。若未来要严格限制未知前缀，应在 `add_grouping_columns()` 中增加校验。
 
-### 3.4 Outlier 过滤
+### 3.4 Outlier 处理
 
-`filter_outliers_for_defect(df, defect_col, outlier_sigma)` 对每个 defect 单独过滤：
+`handle_outliers_for_defect(df, defect_col, outlier_sigma, outlier_handling)` 对每个 defect 单独处理：
 
 ```text
 upper_limit = mean + outlier_sigma * population_std
 ```
 
-仅过滤高端 outlier，不过滤低端点。标准差使用 `ddof=0`。
+仅处理高端 outlier，不处理低端点。标准差使用 `ddof=0`。`filter` 删除超过上限的行；`cap` 保留行并把 defect count 截断为上限。旧接口 `filter_outliers_for_defect()` 保留兼容，固定使用 `filter`。
 
 ### 3.5 特殊 Process 规则
 
@@ -135,7 +135,7 @@ Stage_ID = SPECIAL_STEP_ONLY
 Process_Stage = Step-only | Step_ID=<Step_ID>
 ```
 
-注意：特殊规则在 `filter_outliers_for_defect()` 之后、groupby 之前执行，因此不会影响每个 defect 的 outlier 全局判断，但会影响后续 groupby、wafer count、BSL threshold 和输出。
+注意：特殊规则在 `handle_outliers_for_defect()` 之后、groupby 之前执行，因此不会影响每个 defect 的 outlier 全局判断，但会影响后续 groupby、wafer count、BSL threshold 和输出。
 
 ### 3.6 Process Aggregation
 
@@ -164,7 +164,7 @@ apply_process_aggregation(df, process_aggregation)
 
 `summarize_one_defect()` 是单 defect 的核心计算入口：
 
-1. 过滤 outlier。
+1. 按 `outlier_handling` 删除或封顶 outlier。
 2. 应用特殊 process 合并。
 3. 应用全局 process aggregation。
 4. 按 `Stage_ID`、`Step_ID`、`Equipment_Group`、`Chamber_Group`、`Group_Level`、`Tool_Group` 聚合。
@@ -243,8 +243,8 @@ Button callback
 
 图表方法：
 
-- `_draw_box()`：Box chart。tool 数量多于 12 时自动用 `T1/T2/...` 短标签，并在右侧显示映射；图上显示 `n`、`med`、`avg`。
-- `_filter_chart_group_mode()`：根据 UI 选择只保留 `Group_Level=Chamber` 或 `Group_Level=Equipment`，防止两类分组混在同一张图。
+- `_draw_box()`：Box chart 按 median、mean 降序排列；根据每组可用像素宽度自适应统计字号、箱宽和 raw-data 散点大小。
+- `_filter_chart_group_mode()`：创建独立 `Chart_Group`。`By Chamber` 直接使用 `Chamber_ID`，`By Equipment ID` 直接使用 `Equipment_ID`，不改变核心 Worse Tool 的 `Tool_Group`。
 - `_filter_chart_process()`：直接复用核心层的 `apply_special_process_rules()` 和 `apply_process_aggregation()`，保证 special process 的 Chart 与 Worse Tool 使用同一批数据。
 - `_draw_trend()`：普通真实时间 trend overlay。
 - `_draw_trend_all_chambers()`：所有 chamber 同坐标系 trend。

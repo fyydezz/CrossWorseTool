@@ -94,7 +94,7 @@ python defect_worse_ui.py
 1. 选择 raw defect data。
 2. 选择 BSL 文件。
 3. 指定输出 Excel 路径。
-4. 按需设置 input/output sheet、BSL multiplier、Minimum wafers、Outlier sigma。
+4. 按需设置 input/output sheet、BSL multiplier、Minimum wafers、Outlier sigma 和 Outlier handling。
 5. `Process aggregation` 默认 `Stage_ID + Step_ID`；如需跨 stage 按相同 recipe/tool 对比，选择 `Step_ID only`。
 6. `Analysis data window` 默认 `Latest 2 weeks`，也可选 `Latest 1 week` 或 `All data`。
 7. `Defect columns` 可留空自动识别，也可逗号指定。
@@ -104,15 +104,20 @@ python defect_worse_ui.py
    - `Replace sheet`：只替换目标 sheet，保留 workbook 其他 sheet。
 10. 点击 `Run Worse Tool`。
 
+`Outlier handling` 支持两种口径：
+
+- `Remove values above mean + N*sigma`：删除超过上限的行，保持原有逻辑。
+- `Cap values at mean + N*sigma`：保留行和 wafer，只把超过上限的 defect count 替换为该上限。
+
 ### Charts 页
 
 先加载 raw data，再选择 defect type、process stage、time column、chart data window、chart grouping 和 chart type。`Chart data window` 默认 `Latest 2 weeks`，也支持 `All data`、`Latest 1 week`，同样按数据中最大的 `Scan_Time` 往前回推。运行 Worse Tool 后，Chart data window 会自动同步为本次分析使用的窗口。
 
-`Chart grouping` 必须二选一：`By Chamber` 只显示 chamber-level 数据，`By Equipment ID` 只显示 equipment-level 数据，两类 tool 不会混在同一张图中。
+`Chart grouping` 必须二选一：`By Chamber` 直接按输入的 `Chamber_ID` 分组，`By Equipment ID` 直接按输入的 `Equipment_ID` 分组。只要对应字段非空，每个 process stage 都可以用两种方式画图。该选择是 Chart 的独立观察口径，不会修改 Worse Tool 中按设备前缀决定 Equipment/Chamber 的计算规则。
 
 图表类型：
 
-- `Box chart by selected group`：按选定的 Chamber 或 Equipment ID 展示 box plot。group 数很多时自动使用 `T1/T2/...` 编号，并在右侧显示映射；图上显示 raw data、`n`、`med`、`avg`。
+- `Box chart by selected group`：按中位数从高到低排列；中位数相同时按均值从高到低排列。group 数很多时自动使用 `T1/T2/...` 编号并显示映射；图上保留 raw data，并根据 Box 密集程度自适应显示 `N`、`Median`、`Mean` 字号。
 - `Trend overlay by time`：所有 tool/chamber 按真实时间叠加到同一坐标系。
 - `Trend all groups same axis`：所有选定类型的 group 放在同一个坐标系对比。
 - `Sequential trend by selected group`：第一个 group 按时间排序画完后接第二个 group，再接第三个 group；所有 group 共用同一个 Y 轴，方便比较。
@@ -137,6 +142,7 @@ python defect_worse_tool.py `
   --bsl-multiplier 1.5 `
   --min-wafers 5 `
   --outlier-sigma 3.0 `
+  --outlier-handling cap `
   --process-aggregation step `
   --data-window 14d `
   --special-process-rules "Defect Type1: STG01_STEP10, STG02_STEP10" `
@@ -146,6 +152,8 @@ python defect_worse_tool.py `
 `--process-aggregation stage_step` 是默认模式，按 `Stage_ID + Step_ID` 计算；`--process-aggregation step` 会忽略 Stage，只按 Step_ID 计算和输出。
 
 `--data-window all` 使用全部数据；`--data-window 14d` 使用最新 Scan_Time 往前 14 天；`--data-window 7d` 使用最新 Scan_Time 往前 7 天。
+
+`--outlier-handling filter` 删除超过 sigma 上限的值；`--outlier-handling cap` 将超过上限的值替换为该上限。
 
 手动指定 defect 列：
 
@@ -169,6 +177,7 @@ Max_Count
 Wafer_Count
 Row_Count
 BSL Multiplier
+Outlier Handling
 Recent Trimmed BSL
 Data Window
 Trigger

@@ -9,6 +9,9 @@ from defect_worse_tool import (
     add_grouping_columns,
     build_bsl_lookup,
     filter_outliers_for_defect,
+    handle_outliers_for_defect,
+    OUTLIER_HANDLING_CAP,
+    OUTLIER_HANDLING_FILTER,
     parse_special_process_rules,
     summarize_one_defect,
 )
@@ -92,7 +95,7 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
         )
         self.assertTrue(normal_stage.empty)
 
-    def test_chart_group_modes_are_mutually_exclusive(self) -> None:
+    def test_every_row_can_be_charted_by_chamber_or_equipment(self) -> None:
         raw = add_grouping_columns(
             pd.DataFrame(
                 [
@@ -114,7 +117,7 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
                         "Stage_ID": "S1",
                         "Step_ID": "P1",
                         "Equipment_ID": "KP1001",
-                        "Chamber_ID": "",
+                        "Chamber_ID": "C2",
                     },
                 ]
             )
@@ -123,8 +126,71 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
         chamber = self.app._filter_chart_group_mode(raw, CHART_GROUP_MODE_CHAMBER)
         equipment = self.app._filter_chart_group_mode(raw, CHART_GROUP_MODE_EQUIPMENT)
 
-        self.assertEqual(chamber["Equipment_ID"].tolist(), ["KE1001"])
-        self.assertEqual(equipment["Equipment_ID"].tolist(), ["KP1001"])
+        self.assertEqual(chamber["Chart_Group"].tolist(), ["C1", "C2"])
+        self.assertEqual(equipment["Chart_Group"].tolist(), ["KE1001", "KP1001"])
+
+    def test_outlier_values_can_be_removed_or_capped(self) -> None:
+        raw = pd.DataFrame({"D1": [0.0, 0.0, 0.0, 100.0]})
+        mean = raw["D1"].mean()
+        std = raw["D1"].std(ddof=0)
+        expected_limit = mean + std
+
+        removed = handle_outliers_for_defect(
+            raw,
+            "D1",
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_FILTER,
+        )
+        capped = handle_outliers_for_defect(
+            raw,
+            "D1",
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_CAP,
+        )
+
+        self.assertEqual(len(removed), 3)
+        self.assertEqual(len(capped), 4)
+        self.assertAlmostEqual(capped["D1"].max(), expected_limit)
+
+    def test_capped_chart_statistics_match_worse_tool(self) -> None:
+        raw = add_grouping_columns(
+            pd.DataFrame(
+                [
+                    {
+                        "Lot_ID": "L1",
+                        "Wafer_NO": index,
+                        "Scan_Time": "2026-07-01",
+                        "D1": value,
+                        "Stage_ID": "S1",
+                        "Step_ID": "P1",
+                        "Equipment_ID": "KP1001",
+                        "Chamber_ID": "C1",
+                    }
+                    for index, value in enumerate([0.0, 0.0, 0.0, 100.0], start=1)
+                ]
+            )
+        )
+        result = summarize_one_defect(
+            raw,
+            "D1",
+            {},
+            {"d1": 0.0},
+            min_wafers=1,
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_CAP,
+        )
+        chart = handle_outliers_for_defect(
+            raw,
+            "D1",
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_CAP,
+        )
+        _, chart = self.app._filter_chart_process(chart, "D1", "S1_P1", {}, "stage_step")
+        chart = self.app._filter_chart_group_mode(chart, CHART_GROUP_MODE_EQUIPMENT)
+
+        self.assertEqual(result.iloc[0]["Outlier Handling"], OUTLIER_HANDLING_CAP)
+        self.assertAlmostEqual(chart["D1"].mean(), result.iloc[0]["Mean_Count"])
+        self.assertAlmostEqual(chart["D1"].median(), result.iloc[0]["Median_Count"])
 
 
 if __name__ == "__main__":

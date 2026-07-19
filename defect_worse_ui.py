@@ -22,7 +22,8 @@ from defect_worse_tool import (
     apply_special_process_rules,
     build_worse_tool_result,
     detect_defect_columns,
-    filter_outliers_for_defect,
+    handle_outliers_for_defect,
+    normalize_outlier_handling,
     parse_defect_columns,
     parse_special_process_rules,
     normalize_process_aggregation,
@@ -31,6 +32,8 @@ from defect_worse_tool import (
     DATA_WINDOW_ALL,
     DATA_WINDOW_14D,
     DATA_WINDOW_7D,
+    OUTLIER_HANDLING_CAP,
+    OUTLIER_HANDLING_FILTER,
     read_table,
     filter_by_recent_scan_time,
     validate_required_columns,
@@ -55,6 +58,10 @@ DATA_WINDOW_LABELS = {
     "Latest 1 week": DATA_WINDOW_7D,
 }
 DATA_WINDOW_VALUE_LABELS = {value: label for label, value in DATA_WINDOW_LABELS.items()}
+OUTLIER_HANDLING_LABELS = {
+    "Remove values above mean + N*sigma": OUTLIER_HANDLING_FILTER,
+    "Cap values at mean + N*sigma": OUTLIER_HANDLING_CAP,
+}
 CHART_GROUP_MODE_CHAMBER = "By Chamber"
 CHART_GROUP_MODE_EQUIPMENT = "By Equipment ID"
 CHART_GROUP_MODES = (CHART_GROUP_MODE_CHAMBER, CHART_GROUP_MODE_EQUIPMENT)
@@ -82,6 +89,7 @@ class DefectWorseToolApp(tk.Tk):
         self.bsl_multiplier = tk.DoubleVar(value=1.5)
         self.min_wafers = tk.IntVar(value=5)
         self.outlier_sigma = tk.DoubleVar(value=3.0)
+        self.outlier_handling = tk.StringVar(value="Remove values above mean + N*sigma")
         self.write_mode = tk.StringVar(value="append")
         self.process_aggregation = tk.StringVar(value="Stage_ID + Step_ID")
         self.analysis_data_window = tk.StringVar(value="Latest 2 weeks")
@@ -227,12 +235,23 @@ class DefectWorseToolApp(tk.Tk):
         mode_frame = ttk.Frame(controls, style="Card.TFrame")
         mode_frame.grid(row=5, column=4, rowspan=2, sticky="nsew")
         ttk.Label(mode_frame, text="Write mode", style="Card.TLabel").pack(anchor="w")
-        ttk.Radiobutton(mode_frame, text="Append", variable=self.write_mode, value="append").pack(
-            side="left", pady=(4, 0)
-        )
-        ttk.Radiobutton(mode_frame, text="Replace sheet", variable=self.write_mode, value="replace").pack(
-            side="left", padx=(10, 0), pady=(4, 0)
-        )
+        write_options = ttk.Frame(mode_frame, style="Card.TFrame")
+        write_options.pack(anchor="w", fill="x", pady=(2, 4))
+        ttk.Radiobutton(write_options, text="Append", variable=self.write_mode, value="append").pack(side="left")
+        ttk.Radiobutton(
+            write_options,
+            text="Replace sheet",
+            variable=self.write_mode,
+            value="replace",
+        ).pack(side="left", padx=(8, 0))
+        ttk.Label(mode_frame, text="Outlier handling", style="Card.TLabel").pack(anchor="w")
+        ttk.Combobox(
+            mode_frame,
+            textvariable=self.outlier_handling,
+            values=list(OUTLIER_HANDLING_LABELS.keys()),
+            state="readonly",
+            width=30,
+        ).pack(anchor="w", fill="x", pady=(2, 0))
 
         ttk.Label(
             controls,
@@ -298,6 +317,7 @@ class DefectWorseToolApp(tk.Tk):
             "Mean_Count",
             "Median_Count",
             "Wafer_Count",
+            "Outlier Handling",
             "Recent Trimmed BSL",
             "Data Window",
             "Trigger",
@@ -399,16 +419,25 @@ class DefectWorseToolApp(tk.Tk):
             width=38,
         ).grid(row=16, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Chart grouping", style="Card.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Label(panel, text="Outlier handling", style="Card.TLabel").grid(row=17, column=0, sticky="w")
+        ttk.Combobox(
+            panel,
+            textvariable=self.outlier_handling,
+            values=list(OUTLIER_HANDLING_LABELS.keys()),
+            state="readonly",
+            width=38,
+        ).grid(row=18, column=0, sticky="ew", pady=(2, 7))
+
+        ttk.Label(panel, text="Chart grouping", style="Card.TLabel").grid(row=19, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_group_mode,
             values=CHART_GROUP_MODES,
             state="readonly",
             width=38,
-        ).grid(row=18, column=0, sticky="ew", pady=(2, 7))
+        ).grid(row=20, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=19, column=0, sticky="w")
+        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=21, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_type,
@@ -420,10 +449,10 @@ class DefectWorseToolApp(tk.Tk):
             ],
             state="readonly",
             width=38,
-        ).grid(row=20, column=0, sticky="ew", pady=(2, 8))
+        ).grid(row=22, column=0, sticky="ew", pady=(2, 8))
 
         style_frame = ttk.LabelFrame(panel, text="Chart style", padding=7)
-        style_frame.grid(row=21, column=0, sticky="ew", pady=(0, 10))
+        style_frame.grid(row=23, column=0, sticky="ew", pady=(0, 10))
         style_frame.columnconfigure(1, weight=1)
         self._spin_row(style_frame, 0, "Line width", self.line_width, 0.5, 8.0, 0.2)
         self._spin_row(style_frame, 1, "Marker size", self.marker_size, 0.0, 12.0, 0.5)
@@ -449,9 +478,9 @@ class DefectWorseToolApp(tk.Tk):
         )
 
         ttk.Button(panel, text="Plot", style="Accent.TButton", command=self.start_plot).grid(
-            row=22, column=0, sticky="ew", pady=(0, 5)
+            row=24, column=0, sticky="ew", pady=(0, 5)
         )
-        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=23, column=0, sticky="ew")
+        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=25, column=0, sticky="ew")
 
         chart_frame = ttk.Frame(self.chart_tab, style="Card.TFrame", padding=8)
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
@@ -597,6 +626,7 @@ class DefectWorseToolApp(tk.Tk):
         special_process_rules = parse_special_process_rules(self.special_step_rules.get())
         process_aggregation = self._selected_process_aggregation()
         data_window = self._selected_data_window(self.analysis_data_window)
+        outlier_handling = self._selected_outlier_handling()
         output_sheet = self.output_sheet.get().strip()
         if not output_sheet:
             raise ValueError("Output sheet cannot be blank.")
@@ -610,6 +640,7 @@ class DefectWorseToolApp(tk.Tk):
             "bsl_multiplier": multiplier,
             "min_wafers": min_wafers,
             "outlier_sigma": sigma,
+            "outlier_handling": outlier_handling,
             "special_process_rules": special_process_rules,
             "process_aggregation": process_aggregation,
             "data_window": data_window,
@@ -626,6 +657,7 @@ class DefectWorseToolApp(tk.Tk):
                 bsl_multiplier=options["bsl_multiplier"],
                 min_wafers=options["min_wafers"],
                 outlier_sigma=options["outlier_sigma"],
+                outlier_handling=options["outlier_handling"],
                 special_process_rules=options["special_process_rules"],
                 process_aggregation=options["process_aggregation"],
                 data_window=options["data_window"],
@@ -766,6 +798,7 @@ class DefectWorseToolApp(tk.Tk):
             special_rules = self._parse_special_step_rules_for_ui()
             process_aggregation = self._selected_process_aggregation()
             chart_data_window = self._selected_data_window(self.chart_data_window)
+            outlier_handling = self._selected_outlier_handling()
             chart_group_mode = self.chart_group_mode.get().strip()
             if chart_group_mode not in CHART_GROUP_MODES:
                 raise ValueError("Choose either By Chamber or By Equipment ID for chart grouping.")
@@ -788,6 +821,7 @@ class DefectWorseToolApp(tk.Tk):
                 process_aggregation,
                 chart_data_window,
                 chart_group_mode,
+                outlier_handling,
             ),
             daemon=True,
         ).start()
@@ -803,13 +837,19 @@ class DefectWorseToolApp(tk.Tk):
         process_aggregation: str,
         chart_data_window: str,
         chart_group_mode: str,
+        outlier_handling: str,
     ) -> None:
         try:
             assert self.raw_df is not None
             if time_col not in self.raw_df.columns:
                 raise ValueError("Selected time column does not exist: {}".format(time_col))
             window_df = filter_by_recent_scan_time(self.raw_df, data_window=chart_data_window)
-            df = filter_outliers_for_defect(window_df, defect, outlier_sigma=sigma)
+            df = handle_outliers_for_defect(
+                window_df,
+                defect,
+                outlier_sigma=sigma,
+                outlier_handling=outlier_handling,
+            )
             filter_label, df = self._filter_chart_process(
                 df,
                 defect,
@@ -831,12 +871,12 @@ class DefectWorseToolApp(tk.Tk):
             trend = (
                 df.dropna(subset=["Selected_Time"])
                 .groupby(
-                    ["Selected_Time", "Tool_Group", "Equipment_Group", "Chamber_Group", "Group_Level"],
+                    ["Selected_Time", "Chart_Group", "Chart_Group_Type"],
                     dropna=False,
                 )[defect]
                 .mean()
                 .reset_index()
-                .sort_values(["Equipment_Group", "Chamber_Group", "Selected_Time"])
+                .sort_values(["Chart_Group", "Selected_Time"])
             )
             if trend.empty:
                 raise ValueError("{} cannot be parsed for trend chart.".format(time_col))
@@ -929,6 +969,10 @@ class DefectWorseToolApp(tk.Tk):
     def _selected_data_window(self, variable: tk.StringVar) -> str:
         label = variable.get().strip()
         return DATA_WINDOW_LABELS.get(label, label or DATA_WINDOW_ALL)
+
+    def _selected_outlier_handling(self) -> str:
+        label = self.outlier_handling.get().strip()
+        return normalize_outlier_handling(OUTLIER_HANDLING_LABELS.get(label, label))
 
     def _build_process_stage_values(
         self,
@@ -1027,14 +1071,18 @@ class DefectWorseToolApp(tk.Tk):
 
     def _filter_chart_group_mode(self, df: pd.DataFrame, chart_group_mode: str) -> pd.DataFrame:
         if chart_group_mode == CHART_GROUP_MODE_CHAMBER:
-            target_level = "Chamber"
+            source_column = "Chamber_ID"
+            group_type = "Chamber"
         elif chart_group_mode == CHART_GROUP_MODE_EQUIPMENT:
-            target_level = "Equipment"
+            source_column = "Equipment_ID"
+            group_type = "Equipment ID"
         else:
             raise ValueError("Unsupported chart grouping mode: {}".format(chart_group_mode))
-        return df.loc[
-            df["Group_Level"].astype(str).str.strip().str.casefold() == target_level.casefold()
-        ].copy()
+        group_values = df[source_column].fillna("").astype(str).str.strip()
+        grouped = df.loc[group_values != ""].copy()
+        grouped["Chart_Group"] = group_values.loc[grouped.index]
+        grouped["Chart_Group_Type"] = group_type
+        return grouped
 
     def _show_result_preview(self, result: pd.DataFrame) -> None:
         for item in self.result_tree.get_children():
@@ -1053,7 +1101,7 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.clear()
         ax = self.fig.add_subplot(111)
         grouped_parts = []
-        for tool, part in df.groupby("Tool_Group"):
+        for tool, part in df.groupby("Chart_Group"):
             values = pd.to_numeric(part[defect], errors="coerce").dropna()
             if len(values) > 0:
                 grouped_parts.append(
@@ -1066,17 +1114,21 @@ class DefectWorseToolApp(tk.Tk):
                         float(values.mean()),
                     )
                 )
-        grouped_parts.sort(key=lambda item: item[4], reverse=True)
+        grouped_parts.sort(key=lambda item: (item[4], item[5]), reverse=True)
         if not grouped_parts:
             messagebox.showerror("Plot failed", "No numeric values to plot.")
             return
         full_labels = [item[1] for item in grouped_parts]
-        compact_labels = len(grouped_parts) > 12
+        pixels_per_box = self._box_pixels_per_group(len(grouped_parts))
+        compact_labels = len(grouped_parts) > 12 or pixels_per_box < 80
+        stats_font_size = self._box_stats_font_size(pixels_per_box)
         labels = ["T{}".format(index) for index in range(1, len(grouped_parts) + 1)] if compact_labels else full_labels
         groups = [item[2] for item in grouped_parts]
         counts = [item[3] for item in grouped_parts]
         medians = [item[4] for item in grouped_parts]
         means = [item[5] for item in grouped_parts]
+        box_width = 0.64 if pixels_per_box >= 110 else 0.56 if pixels_per_box >= 70 else 0.46
+        raw_point_size = 18 if pixels_per_box >= 110 else 14 if pixels_per_box >= 70 else 10
         box_color = "#6E9F8F"
         ax.set_facecolor("#FBFAF7")
         self.fig.patch.set_facecolor("#F4F1EA")
@@ -1085,7 +1137,7 @@ class DefectWorseToolApp(tk.Tk):
             labels=labels,
             showmeans=True,
             patch_artist=True,
-            widths=0.58,
+            widths=box_width,
             medianprops={"color": "#C23B22", "linewidth": 2.2},
             meanprops={
                 "marker": "D",
@@ -1108,11 +1160,13 @@ class DefectWorseToolApp(tk.Tk):
             patch.set_alpha(0.72)
             patch.set_edgecolor("#294C46")
             patch.set_linewidth(1.1)
+        value_span = max(max(group) for group in groups) - min(min(group) for group in groups)
+        annotation_offset = max(value_span * 0.025, 0.05)
         for index, values in enumerate(groups, start=1):
             ax.scatter(
                 self._jitter_positions(index, len(values)),
                 values,
-                s=14,
+                s=raw_point_size,
                 color=box_color,
                 edgecolors="#FFFFFF",
                 linewidths=0.35,
@@ -1120,28 +1174,36 @@ class DefectWorseToolApp(tk.Tk):
                 zorder=3,
             )
             top = max(values)
-            ax.text(
-                index,
-                top * 1.03 if top != 0 else 0.05,
-                "n={}\nmed={:.2f}\navg={:.2f}".format(
+            if pixels_per_box >= 105:
+                stats_text = "N={}\nMedian={:.2f}\nMean={:.2f}".format(
                     counts[index - 1],
                     medians[index - 1],
                     means[index - 1],
-                ),
+                )
+            else:
+                stats_text = "N={}\nMed={:.2f} Avg={:.2f}".format(
+                    counts[index - 1],
+                    medians[index - 1],
+                    means[index - 1],
+                )
+            ax.text(
+                index,
+                top + annotation_offset,
+                stats_text,
                 ha="center",
                 va="bottom",
-                fontsize=7 if compact_labels else 8,
+                fontsize=stats_font_size,
                 color="#37474F",
             )
         group_label = self._chart_group_label(df)
-        ax.set_title("{} | {} | Box by {}".format(defect, stage, group_label))
-        ax.set_xlabel(group_label)
+        ax.set_title("{} | {} | Box by {} (median high to low)".format(defect, stage, group_label))
+        ax.set_xlabel("{} (median high to low)".format(group_label))
         ax.set_ylabel("Defect count")
         ax.tick_params(axis="x", rotation=0 if compact_labels else 45)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7D4CC", linewidth=0.7, alpha=0.7)
         ax.set_axisbelow(True)
-        ax.margins(y=0.14)
+        ax.margins(y=0.20 if stats_font_size >= 10 else 0.16)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
         ax.legend(
@@ -1181,7 +1243,7 @@ class DefectWorseToolApp(tk.Tk):
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=7,
+                fontsize=max(8, stats_font_size - 1),
                 color="#263442",
                 bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFFFFF", "edgecolor": "#D1D5DB", "alpha": 0.92},
             )
@@ -1207,7 +1269,7 @@ class DefectWorseToolApp(tk.Tk):
         groups = self._ordered_trend_groups(trend)
         colors = self._colors(len(groups))
         for color, tool in zip(colors, groups):
-            part = trend.loc[trend["Tool_Group"] == tool].sort_values("Selected_Time")
+            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
             ax.plot(
                 part["Selected_Time"],
                 part[defect],
@@ -1240,7 +1302,7 @@ class DefectWorseToolApp(tk.Tk):
         groups = self._ordered_trend_groups(trend)
         colors = self._colors(len(groups))
         for color, tool in zip(colors, groups):
-            part = trend.loc[trend["Tool_Group"] == tool].sort_values("Selected_Time")
+            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
             ax.plot(
                 part["Selected_Time"],
                 part[defect],
@@ -1281,7 +1343,7 @@ class DefectWorseToolApp(tk.Tk):
         current_x = 0
 
         for index, (color, tool) in enumerate(zip(colors, groups)):
-            part = trend.loc[trend["Tool_Group"] == tool].sort_values("Selected_Time").reset_index(drop=True)
+            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time").reset_index(drop=True)
             if part.empty:
                 continue
             xs = list(range(current_x, current_x + len(part)))
@@ -1350,26 +1412,37 @@ class DefectWorseToolApp(tk.Tk):
 
     def _ordered_trend_groups(self, trend: pd.DataFrame) -> List[str]:
         order = (
-            trend[["Tool_Group", "Equipment_Group", "Chamber_Group", "Group_Level"]]
+            trend[["Chart_Group"]]
             .drop_duplicates()
-            .sort_values(["Equipment_Group", "Chamber_Group", "Tool_Group"])
+            .sort_values(["Chart_Group"])
         )
-        return order["Tool_Group"].astype(str).tolist()
+        return order["Chart_Group"].astype(str).tolist()
+
+    def _box_pixels_per_group(self, group_count: int) -> float:
+        if group_count <= 0:
+            return 0.0
+        figure_width = float(self.fig.get_figwidth()) * float(self.fig.dpi)
+        return figure_width / float(group_count)
+
+    def _box_stats_font_size(self, pixels_per_box: float) -> float:
+        if pixels_per_box >= 140:
+            return 11.5
+        if pixels_per_box >= 95:
+            return 10.5
+        if pixels_per_box >= 65:
+            return 9.0
+        return 8.0
 
     def _display_tool_label(self, part: pd.DataFrame, fallback: str) -> str:
         if part.empty:
             return fallback
-        row = part.iloc[0]
-        if str(row.get("Group_Level", "")).strip().casefold() == "chamber":
-            chamber = str(row.get("Chamber_Group", "")).strip()
-            return chamber or fallback
-        equipment = str(row.get("Equipment_Group", "")).strip()
-        return equipment or fallback
+        label = str(part.iloc[0].get("Chart_Group", "")).strip()
+        return label or fallback
 
     def _chart_group_label(self, part: pd.DataFrame) -> str:
-        if not part.empty and str(part.iloc[0].get("Group_Level", "")).strip().casefold() == "chamber":
-            return "Chamber"
-        return "Equipment ID"
+        if part.empty:
+            return "Chart group"
+        return str(part.iloc[0].get("Chart_Group_Type", "Chart group")).strip() or "Chart group"
 
     def _colors(self, count: int) -> List[object]:
         if count <= 0:

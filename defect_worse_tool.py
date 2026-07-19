@@ -42,6 +42,9 @@ DATA_WINDOW_DAYS = {
     DATA_WINDOW_14D: 14,
     DATA_WINDOW_7D: 7,
 }
+OUTLIER_HANDLING_FILTER = "filter"
+OUTLIER_HANDLING_CAP = "cap"
+OUTLIER_HANDLING_CHOICES = (OUTLIER_HANDLING_FILTER, OUTLIER_HANDLING_CAP)
 
 
 def normalize_column_name(name: object) -> str:
@@ -357,11 +360,30 @@ def calculate_recent_trimmed_bsl(df: pd.DataFrame, defect_col: str) -> Optional[
     return float(trimmed.mean())
 
 
-def filter_outliers_for_defect(
+def normalize_outlier_handling(value: str) -> str:
+    normalized = str(value or OUTLIER_HANDLING_FILTER).strip().lower().replace("-", "_")
+    aliases = {
+        "filter": OUTLIER_HANDLING_FILTER,
+        "remove": OUTLIER_HANDLING_FILTER,
+        "drop": OUTLIER_HANDLING_FILTER,
+        "cap": OUTLIER_HANDLING_CAP,
+        "clip": OUTLIER_HANDLING_CAP,
+        "winsorize": OUTLIER_HANDLING_CAP,
+    }
+    if normalized not in aliases:
+        raise ValueError(
+            "outlier_handling must be one of: {}".format(", ".join(OUTLIER_HANDLING_CHOICES))
+        )
+    return aliases[normalized]
+
+
+def handle_outliers_for_defect(
     df: pd.DataFrame,
     defect_col: str,
     outlier_sigma: float = 3.0,
+    outlier_handling: str = OUTLIER_HANDLING_FILTER,
 ) -> pd.DataFrame:
+    handling = normalize_outlier_handling(outlier_handling)
     values = pd.to_numeric(df[defect_col], errors="coerce")
     valid = df.loc[values.notna()].copy()
     valid[defect_col] = values.loc[values.notna()].astype(float)
@@ -372,7 +394,24 @@ def filter_outliers_for_defect(
     std = valid[defect_col].std(ddof=0)
     if pd.isna(std) or std == 0:
         return valid
-    return valid.loc[valid[defect_col] <= mean + float(outlier_sigma) * std].copy()
+    upper_limit = mean + float(outlier_sigma) * std
+    if handling == OUTLIER_HANDLING_CAP:
+        valid[defect_col] = valid[defect_col].clip(upper=upper_limit)
+        return valid
+    return valid.loc[valid[defect_col] <= upper_limit].copy()
+
+
+def filter_outliers_for_defect(
+    df: pd.DataFrame,
+    defect_col: str,
+    outlier_sigma: float = 3.0,
+) -> pd.DataFrame:
+    return handle_outliers_for_defect(
+        df,
+        defect_col,
+        outlier_sigma=outlier_sigma,
+        outlier_handling=OUTLIER_HANDLING_FILTER,
+    )
 
 
 def summarize_one_defect(
@@ -383,12 +422,19 @@ def summarize_one_defect(
     bsl_multiplier: float = 1.5,
     min_wafers: int = 5,
     outlier_sigma: float = 3.0,
+    outlier_handling: str = OUTLIER_HANDLING_FILTER,
     special_process_rules: Optional[SpecialProcessRules] = None,
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
     recent_trimmed_bsl: Optional[float] = None,
     data_window: str = DATA_WINDOW_ALL,
 ) -> pd.DataFrame:
-    filtered = filter_outliers_for_defect(df, defect_col, outlier_sigma=outlier_sigma)
+    handling = normalize_outlier_handling(outlier_handling)
+    filtered = handle_outliers_for_defect(
+        df,
+        defect_col,
+        outlier_sigma=outlier_sigma,
+        outlier_handling=handling,
+    )
     if filtered.empty:
         return pd.DataFrame()
     filtered = apply_special_process_rules(
@@ -450,6 +496,7 @@ def summarize_one_defect(
     grouped["Equipment ID"] = grouped["Equipment_Group"]
     grouped["Chamber ID"] = np.where(grouped["Group_Level"] == "Chamber", grouped["Chamber_Group"], "")
     grouped["BSL Multiplier"] = float(bsl_multiplier)
+    grouped["Outlier Handling"] = handling
     grouped["Recent Trimmed BSL"] = recent_trimmed_bsl
     grouped["Data Window"] = normalize_data_window(data_window)
     grouped["Trigger"] = np.where(
@@ -471,6 +518,7 @@ def summarize_one_defect(
         "Wafer_Count",
         "Row_Count",
         "BSL Multiplier",
+        "Outlier Handling",
         "Recent Trimmed BSL",
         "Data Window",
         "Trigger",
@@ -489,6 +537,7 @@ def build_worse_tool_result(
     bsl_multiplier: float = 1.5,
     min_wafers: int = 5,
     outlier_sigma: float = 3.0,
+    outlier_handling: str = OUTLIER_HANDLING_FILTER,
     special_process_rules: Optional[SpecialProcessRules] = None,
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
     data_window: str = DATA_WINDOW_ALL,
@@ -512,6 +561,7 @@ def build_worse_tool_result(
             bsl_multiplier=bsl_multiplier,
             min_wafers=min_wafers,
             outlier_sigma=outlier_sigma,
+            outlier_handling=outlier_handling,
             special_process_rules=special_process_rules,
             process_aggregation=process_aggregation,
             recent_trimmed_bsl=recent_trimmed_bsl,
@@ -535,6 +585,7 @@ def build_worse_tool_result(
                 "Wafer_Count",
                 "Row_Count",
                 "BSL Multiplier",
+                "Outlier Handling",
                 "Recent Trimmed BSL",
                 "Data Window",
                 "Trigger",
@@ -672,6 +723,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-wafers", type=int, default=5, help="Minimum unique wafers per process-stage/tool group.")
     parser.add_argument("--outlier-sigma", type=float, default=3.0, help="Upper outlier cutoff in sigma. Default: 3.0")
     parser.add_argument(
+        "--outlier-handling",
+        choices=OUTLIER_HANDLING_CHOICES,
+        default=OUTLIER_HANDLING_FILTER,
+        help="Values above the sigma limit are removed (filter) or clipped to the limit (cap).",
+    )
+    parser.add_argument(
         "--write-mode",
         choices=["append", "replace"],
         default="append",
@@ -690,6 +747,7 @@ def main() -> None:
         bsl_multiplier=args.bsl_multiplier,
         min_wafers=args.min_wafers,
         outlier_sigma=args.outlier_sigma,
+        outlier_handling=args.outlier_handling,
         special_process_rules=parse_special_process_rules(args.special_process_rules),
         process_aggregation=args.process_aggregation,
         data_window=args.data_window,
