@@ -170,7 +170,7 @@ def build_pdf() -> None:
                 ["适用对象", "需要用 UI 跑 worse-tool 分析、查看 box/trend chart、调用外部 PPT 方法的用户"],
                 ["推荐环境", "Python 3.8；先执行 python -m pip install -r requirements.txt"],
                 ["启动方式", "在项目目录运行：python defect_worse_ui.py"],
-                ["核心输入", "Raw defect data、BSL file、Output Excel；PPT 功能另需 PPT output/template/image 三个路径"],
+                ["核心输入", "Raw defect data、BSL file、Output Excel；PPT 功能另需 PPT output/template/image folder 三个路径"],
             ],
             font_name,
             widths=[3.4 * cm, 12.6 * cm],
@@ -203,7 +203,8 @@ def build_pdf() -> None:
                 ["Output sheet", "默认 worse_tool", "结果写入的 sheet 名。"],
                 ["BSL multiplier", "默认 1.5", "Mean 或 Median 达到 BSL * multiplier 时判定为 worse。"],
                 ["Minimum wafers", "默认 5", "每个 process/tool 分组少于该 wafer 数会被过滤。"],
-                ["Outlier sigma", "默认 3.0", "每个 defect 先过滤高于 mean + sigma * std 的点。"],
+                ["Outlier sigma", "默认 3.0", "每个 defect 的高点上限为 mean + sigma * std。"],
+                ["Outlier handling", "Remove 或 Cap", "Remove 删除超过上限的行；Cap 保留行并把高点替换为上限。"],
             ],
             font_name,
             widths=[3.2 * cm, 4.2 * cm, 8.6 * cm],
@@ -258,6 +259,7 @@ def build_pdf() -> None:
                 ["Equipment ID / Chamber ID", "KP/KD/KW 按整机；KE/KT 按 chamber。"],
                 ["Mean_Count / Median_Count", "当前分组的均值和中位数。"],
                 ["Wafer_Count", "当前分组 unique wafer 数。"],
+                ["Outlier Handling", "本次异常值使用 filter 删除还是 cap 封顶。"],
                 ["Recent Trimmed BSL", "当前分析窗口内该 defect 的全部数据，去掉上下各 5% 后取均值，用于观察近期 BSL 水平。"],
                 ["Data Window", "本次使用 all、14d 或 7d 哪个数据窗口。"],
                 ["Trigger", "触发原因，mean 或 median。"],
@@ -277,6 +279,7 @@ def build_pdf() -> None:
                 "选择 Process stage。如果启用了 Step_ID only 或特殊规则，会看到 Step-only | Step_ID=... 选项。",
                 "选择 Time column，通常使用 Scan_Time。",
                 "选择 Chart data window：All data、Latest 2 weeks 或 Latest 1 week。",
+                "选择 Outlier handling，并选择 By Chamber 或 By Equipment ID。每个 process 只要对应字段非空，都可以使用两种分组方式。",
                 "选择 Chart type 后点击 Plot。",
             ],
             body,
@@ -286,13 +289,19 @@ def build_pdf() -> None:
         make_table(
             [
                 ["图表类型", "用途"],
-                ["Box chart by tool", "对比不同 tool/chamber 的分布。tool 数量多时自动用 T1/T2 编号，并在右侧显示映射；图上显示 n、med、avg。"],
+                ["Box chart by selected group", "按中位数从高到低排列；保留 raw data，并根据 Box 密集程度自适应显示 N、Median、Mean。"],
                 ["Trend overlay by time", "所有 tool/chamber 按真实 Scan_Time 叠加到同一坐标系。"],
-                ["Trend all chambers same axis", "所有 chamber 放在同一坐标系对比。"],
-                ["Sequential trend by tool", "第一个 tool 按时间画完后接第二个 tool，所有 tool 共用同一 Y 轴，便于横向比较。"],
+                ["Trend all groups same axis", "所有选定的 Chamber 或 Equipment ID 放在同一坐标系对比。"],
+                ["Sequential trend by selected group", "第一个 group 按时间画完后接第二个 group，所有 group 共用同一 Y 轴。"],
             ],
             font_name,
             widths=[4.8 * cm, 11.2 * cm],
+        )
+    )
+    story.append(
+        p(
+            "Chart grouping 是独立观察口径：By Chamber 直接按 Chamber_ID 分组，By Equipment ID 直接按 Equipment_ID 分组；不会改变 Worse Tool 的设备前缀聚合规则。",
+            small,
         )
     )
 
@@ -319,8 +328,8 @@ def build_pdf() -> None:
                 ["控件", "说明"],
                 ["PPT output path", "最终生成的 .pptx 路径。"],
                 ["PPT template", "你的 PPT 模板文件，支持 .pptx/.pptm/.potx。"],
-                ["Input image", "要插入或处理的图片，支持 png/jpg/jpeg/bmp/tif/tiff。"],
-                ["Run PPT Generator", "点击后在后台线程调用 ppt_integration.py 中的 run_external_ppt_method(output, template, image, log_callback)。"],
+                ["Input image folder", "包含待处理图片的文件夹路径。"],
+                ["Run PPT Generator", "点击后在后台线程调用 ppt_integration.py 中的 run_external_ppt_method(output, template, image_folder, log_callback)。"],
             ],
             font_name,
             widths=[4.5 * cm, 11.5 * cm],
