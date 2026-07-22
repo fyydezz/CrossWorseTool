@@ -109,6 +109,7 @@ class DefectWorseToolApp(tk.Tk):
         self.color_scheme = tk.StringVar(value="Distinct")
         self.custom_color = tk.StringVar(value="#1565C0")
         self.box_line_width = tk.DoubleVar(value=1.2)
+        self.box_label_font_size = tk.DoubleVar(value=0.0)
         self.show_box_count = tk.BooleanVar(value=True)
         self.show_box_median = tk.BooleanVar(value=True)
         self.show_box_mean = tk.BooleanVar(value=True)
@@ -543,13 +544,43 @@ class DefectWorseToolApp(tk.Tk):
         window = tk.Toplevel(self)
         self.chart_style_window = window
         window.title("Chart Style")
-        window.geometry("430x470")
-        window.resizable(False, False)
+        dialog_height = min(620, max(400, window.winfo_screenheight() - 140))
+        window.geometry("450x{}".format(dialog_height))
+        window.minsize(400, 360)
+        window.resizable(True, True)
         window.transient(self)
         window.configure(background="#F1EFE9")
         window.protocol("WM_DELETE_WINDOW", self._close_chart_style_dialog)
-        body = ttk.Frame(window, style="Card.TFrame", padding=18)
-        body.pack(fill="both", expand=True, padx=12, pady=12)
+
+        outer = ttk.Frame(window, style="Card.TFrame")
+        outer.pack(fill="both", expand=True, padx=12, pady=12)
+        outer.columnconfigure(0, weight=1)
+        outer.rowconfigure(0, weight=1)
+        style_canvas = tk.Canvas(
+            outer,
+            background="#FCFBF7",
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        style_canvas.grid(row=0, column=0, sticky="nsew")
+        style_scroll = ttk.Scrollbar(outer, orient="vertical", command=style_canvas.yview)
+        style_scroll.grid(row=0, column=1, sticky="ns")
+        style_canvas.configure(yscrollcommand=style_scroll.set)
+        body = ttk.Frame(style_canvas, style="Card.TFrame", padding=18)
+        body_window = style_canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind(
+            "<Configure>",
+            lambda _event: style_canvas.configure(scrollregion=style_canvas.bbox("all")),
+        )
+        style_canvas.bind(
+            "<Configure>",
+            lambda event: style_canvas.itemconfigure(body_window, width=event.width),
+        )
+        def scroll_style_dialog(event):
+            style_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        window.bind("<MouseWheel>", scroll_style_dialog)
         body.columnconfigure(0, weight=1)
 
         ttk.Label(body, text="CHART STYLE", style="Section.TLabel").grid(row=0, column=0, sticky="w")
@@ -564,8 +595,9 @@ class DefectWorseToolApp(tk.Tk):
         box_frame.grid(row=2, column=0, sticky="ew")
         box_frame.columnconfigure(1, weight=1)
         self._spin_row(box_frame, 0, "Outline width", self.box_line_width, 0.5, 8.0, 0.2)
+        self._spin_row(box_frame, 1, "Label size (0 = Auto)", self.box_label_font_size, 0.0, 30.0, 0.5)
         annotation_frame = ttk.Frame(box_frame, style="Card.TFrame")
-        annotation_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        annotation_frame.grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         ttk.Label(annotation_frame, text="Show labels:", style="Card.TLabel").pack(side="left")
         ttk.Checkbutton(annotation_frame, text="Count", variable=self.show_box_count).pack(side="left", padx=(8, 0))
         ttk.Checkbutton(annotation_frame, text="Median", variable=self.show_box_median).pack(side="left", padx=(8, 0))
@@ -622,6 +654,9 @@ class DefectWorseToolApp(tk.Tk):
             float(self.line_width.get())
             float(self.marker_size.get())
             float(self.box_line_width.get())
+            box_label_font_size = float(self.box_label_font_size.get())
+            if box_label_font_size < 0:
+                raise ValueError("Box label size must be 0 (Auto) or a positive number.")
             if self.color_scheme.get() == "Custom single" and not is_color_like(self.custom_color.get().strip()):
                 raise ValueError("Custom color is not a valid Matplotlib color.")
         except (tk.TclError, ValueError) as exc:
@@ -1495,7 +1530,7 @@ class DefectWorseToolApp(tk.Tk):
                 transform=ax.transAxes,
                 ha="left",
                 va="top",
-                fontsize=max(8, stats_font_size - 1),
+                fontsize=max(5.0, stats_font_size - 1),
                 color="#263442",
                 bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFFFFF", "edgecolor": "#D1D5DB", "alpha": 0.92},
             )
@@ -1701,6 +1736,9 @@ class DefectWorseToolApp(tk.Tk):
         ]
 
     def _box_stats_font_size(self, pixels_per_box: float) -> float:
+        configured_size = float(self.box_label_font_size.get())
+        if configured_size > 0:
+            return configured_size
         if pixels_per_box >= 140:
             return 11.5
         if pixels_per_box >= 95:

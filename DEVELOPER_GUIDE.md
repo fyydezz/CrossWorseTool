@@ -5,7 +5,7 @@
 Chart layout and styling are intentionally separated:
 
 - `_build_chart_tab()` builds the hierarchical control panel and chart toolbar.
-- `open_chart_style_dialog()` owns global defaults for box labels, line styles, palettes, markers, and Y-axis limits.
+- `open_chart_style_dialog()` owns global defaults for box labels, line styles, palettes, markers, and Y-axis limits. Its Canvas-based body and vertical scrollbar keep every control reachable under Windows display scaling.
 - `_reset_chart_artists()` clears selection state before each redraw.
 - `_register_chart_artist()` makes a box patch or line pickable and stores edit metadata.
 - `_on_chart_pick()` records the clicked artist and updates the toolbar selection.
@@ -13,6 +13,8 @@ Chart layout and styling are intentionally separated:
 - `_artist_style()` reapplies an override when the same chart context is rendered again.
 
 Override keys include defect, process, chart-group type, and group value. Overrides are session-local and are not written to disk. `_draw_box()` maps descending rank through `coolwarm` from red to blue, preserves raw-data scatter, and conditionally builds Count/Median/Mean labels. Trend methods use `_colors()` for distinct shuffled defaults and register each line for picking.
+
+`box_label_font_size=0` keeps `_box_stats_font_size()` in adaptive mode. Any positive value overrides the adaptive result for the main Box statistics and compact tool mapping.
 
 When adding a new selectable chart type, call `_reset_chart_artists()`, apply `_artist_style()` before drawing, then call `_register_chart_artist()` with a context-specific key. Keep Matplotlib drawing on the Tk main thread through `_poll_results()`.
 

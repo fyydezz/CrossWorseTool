@@ -50,6 +50,15 @@ class DefectWorseUiStyleTests(unittest.TestCase):
         self.assertEqual(selected, ("#102030", 3.4))
         self.assertEqual(untouched, ("#FFFFFF", 1.0))
 
+    def test_box_label_font_size_supports_auto_and_fixed_values(self):
+        app = object.__new__(DefectWorseToolApp)
+        app.box_label_font_size = _Value(0.0)
+        self.assertEqual(app._box_stats_font_size(150), 11.5)
+        self.assertEqual(app._box_stats_font_size(50), 8.0)
+
+        app.box_label_font_size = _Value(13.5)
+        self.assertEqual(app._box_stats_font_size(50), 13.5)
+
 
 if __name__ == "__main__":
     unittest.main()
