@@ -1,5 +1,23 @@
 # Defect Worse Tool Cross 开发者文档
 
+## Interactive Chart Architecture (latest UI)
+
+Chart layout and styling are intentionally separated:
+
+- `_build_chart_tab()` builds the hierarchical control panel and chart toolbar.
+- `open_chart_style_dialog()` owns global defaults for box labels, line styles, palettes, markers, and Y-axis limits.
+- `_reset_chart_artists()` clears selection state before each redraw.
+- `_register_chart_artist()` makes a box patch or line pickable and stores edit metadata.
+- `_on_chart_pick()` records the clicked artist and updates the toolbar selection.
+- `edit_selected_chart_item()` changes only the selected artist and stores the override.
+- `_artist_style()` reapplies an override when the same chart context is rendered again.
+
+Override keys include defect, process, chart-group type, and group value. Overrides are session-local and are not written to disk. `_draw_box()` maps descending rank through `coolwarm` from red to blue, preserves raw-data scatter, and conditionally builds Count/Median/Mean labels. Trend methods use `_colors()` for distinct shuffled defaults and register each line for picking.
+
+When adding a new selectable chart type, call `_reset_chart_artists()`, apply `_artist_style()` before drawing, then call `_register_chart_artist()` with a context-specific key. Keep Matplotlib drawing on the Tk main thread through `_poll_results()`.
+
+---
+
 本文档面向后续维护和二次开发。项目兼容 Python 3.8，请不要使用 `match/case`、`list[str]`、`X | None` 等 Python 3.9+ 或 3.10+ 语法。
 
 ## 1. 工程结构

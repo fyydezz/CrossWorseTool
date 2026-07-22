@@ -1,5 +1,20 @@
 # Defect Worse Tool Cross 使用说明
 
+## Chart Interaction (latest UI)
+
+The Charts tab now separates workflow controls from visual styling:
+
+1. Use the left panel to load data and select defect, process, grouping, chart type, time window, and outlier handling.
+2. Select `Chart Style...` to open the style dialog. Box labels (`Count`, `Median`, and `Mean`) can be shown or hidden independently.
+3. Box charts are ordered high-to-low by median and use a red-to-blue rank scale: red indicates higher median groups and blue indicates lower median groups. Raw-data points remain visible.
+4. Trend charts assign distinct shuffled colors to different lines by default. Global line width, marker size, palette, and Y-axis scale are configured in the style dialog.
+5. Click a box or trend line, then select `Edit Selected` above the chart to change only that item's color and width.
+6. Per-item styles remain active when the same chart context is redrawn during the current UI session.
+
+The scrollable left panel is divided into `Data Source`, `View`, and `Data Preparation`. `Save PNG` is above the chart.
+
+---
+
 本工具用于把某一扫描站点得到的 wafer defect count 数据，Cross 到不同 Process Stage 和 Equipment/Chamber，筛选 worse tool，并通过 UI 查看 Box chart 和 Trend chart。
 
 ## 1. 文件说明

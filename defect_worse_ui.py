@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 import queue
+import random
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import List, Optional, Sequence, Tuple
+from tkinter import colorchooser, filedialog, messagebox, ttk
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.colors import is_color_like, to_hex
 from matplotlib.lines import Line2D
 from matplotlib.ticker import MaxNLocator
 
@@ -104,10 +106,15 @@ class DefectWorseToolApp(tk.Tk):
         self.special_step_rules = tk.StringVar()
         self.line_width = tk.DoubleVar(value=1.8)
         self.marker_size = tk.DoubleVar(value=4.0)
-        self.color_scheme = tk.StringVar(value="Tableau")
+        self.color_scheme = tk.StringVar(value="Distinct")
         self.custom_color = tk.StringVar(value="#1565C0")
+        self.box_line_width = tk.DoubleVar(value=1.2)
+        self.show_box_count = tk.BooleanVar(value=True)
+        self.show_box_median = tk.BooleanVar(value=True)
+        self.show_box_mean = tk.BooleanVar(value=True)
         self.y_min = tk.StringVar()
         self.y_max = tk.StringVar()
+        self.selected_chart_item = tk.StringVar(value="No chart item selected")
         self.status = tk.StringVar(value="Select raw data and a BSL file to start.")
 
         self.raw_df: Optional[pd.DataFrame] = None
@@ -117,6 +124,10 @@ class DefectWorseToolApp(tk.Tk):
         self.stage_values: List[str] = []
         self.result_queue: queue.Queue = queue.Queue()
         self.busy = False
+        self.chart_style_window: Optional[tk.Toplevel] = None
+        self.selected_chart_artist = None
+        self.chart_artist_registry: Dict[object, Dict[str, object]] = {}
+        self.artist_style_overrides: Dict[Tuple[str, str], Dict[str, object]] = {}
 
         self._configure_style()
         self._build_ui()
@@ -128,24 +139,43 @@ class DefectWorseToolApp(tk.Tk):
         style = ttk.Style(self)
         if "clam" in style.theme_names():
             style.theme_use("clam")
-        self.configure(background="#EEF2F6")
-        style.configure("TFrame", background="#EEF2F6")
-        style.configure("Card.TFrame", background="#FFFFFF")
-        style.configure("TLabel", background="#EEF2F6", foreground="#263442")
-        style.configure("Card.TLabel", background="#FFFFFF", foreground="#263442")
-        style.configure("Title.TLabel", font=("Segoe UI Semibold", 17), foreground="#123047")
-        style.configure("Subtitle.TLabel", font=("Segoe UI", 9), foreground="#5F7180")
-        style.configure("Accent.TButton", font=("Segoe UI Semibold", 10), padding=(12, 8))
-        style.configure("TNotebook", background="#EEF2F6", borderwidth=0)
-        style.configure("TNotebook.Tab", padding=(18, 8), font=("Segoe UI Semibold", 10))
+        self.configure(background="#F1EFE9")
+        style.configure("TFrame", background="#F1EFE9")
+        style.configure("Card.TFrame", background="#FCFBF7")
+        style.configure("Toolbar.TFrame", background="#E9E5DC")
+        style.configure("TLabel", background="#F1EFE9", foreground="#25343C", font=("Segoe UI", 9))
+        style.configure("Card.TLabel", background="#FCFBF7", foreground="#25343C")
+        style.configure("Toolbar.TLabel", background="#E9E5DC", foreground="#465760")
+        style.configure("Title.TLabel", font=("Bahnschrift SemiBold", 18), foreground="#173642")
+        style.configure("Subtitle.TLabel", font=("Segoe UI", 9), foreground="#65727A")
+        style.configure(
+            "Section.TLabel",
+            background="#FCFBF7",
+            foreground="#A54F32",
+            font=("Bahnschrift SemiBold", 9),
+        )
+        style.configure(
+            "Accent.TButton",
+            font=("Segoe UI Semibold", 10),
+            foreground="#FFFFFF",
+            background="#176F69",
+            padding=(12, 8),
+        )
+        style.map("Accent.TButton", background=[("active", "#125A56"), ("disabled", "#9DB5B2")])
+        style.configure("Quiet.TButton", padding=(10, 7))
+        style.configure("TNotebook", background="#F1EFE9", borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(20, 9), font=("Segoe UI Semibold", 10))
+        style.map("TNotebook.Tab", background=[("selected", "#FCFBF7")], foreground=[("selected", "#173642")])
         style.configure("Treeview", rowheight=25, font=("Segoe UI", 9))
         style.configure("Treeview.Heading", font=("Segoe UI Semibold", 9))
+        style.configure("TLabelframe", background="#FCFBF7", bordercolor="#D8D3C8")
+        style.configure("TLabelframe.Label", background="#FCFBF7", foreground="#173642", font=("Segoe UI Semibold", 9))
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(self, padding=(18, 12, 18, 6))
+        header = ttk.Frame(self, padding=(20, 14, 20, 8))
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="Defect Worse Tool Cross", style="Title.TLabel").grid(row=0, column=0, sticky="w")
@@ -154,6 +184,9 @@ class DefectWorseToolApp(tk.Tk):
             text="Run the screening workflow and inspect process-stage charts in one place.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Label(header, text="ANALYSIS WORKBENCH", style="Section.TLabel").grid(
+            row=0, column=1, rowspan=2, sticky="e"
+        )
 
         self.notebook = ttk.Notebook(self)
         self.notebook.grid(row=1, column=0, sticky="nsew", padx=14, pady=(2, 8))
@@ -356,7 +389,7 @@ class DefectWorseToolApp(tk.Tk):
         self.chart_tab.columnconfigure(1, weight=1)
         self.chart_tab.rowconfigure(0, weight=1)
 
-        panel_canvas = tk.Canvas(self.chart_tab, width=330, background="#FFFFFF", highlightthickness=0)
+        panel_canvas = tk.Canvas(self.chart_tab, width=330, background="#FCFBF7", highlightthickness=0)
         panel_canvas.grid(row=0, column=0, sticky="ns")
         panel_scroll = ttk.Scrollbar(self.chart_tab, orient="vertical", command=panel_canvas.yview)
         panel_scroll.grid(row=0, column=0, sticky="nse")
@@ -378,119 +411,108 @@ class DefectWorseToolApp(tk.Tk):
         )
         panel.columnconfigure(0, weight=1)
 
-        ttk.Label(panel, text="Raw defect data", style="Card.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Entry(panel, textvariable=self.input_path, width=40).grid(row=1, column=0, sticky="ew", pady=(2, 4))
-        ttk.Button(panel, text="Browse / Load Raw Data", command=self.browse_raw).grid(row=2, column=0, sticky="ew")
+        ttk.Label(panel, text="01  DATA SOURCE", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(panel, text="Raw defect data", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Entry(panel, textvariable=self.input_path, width=40).grid(row=2, column=0, sticky="ew", pady=(2, 4))
+        ttk.Button(panel, text="Browse / Load Raw Data", command=self.browse_raw).grid(row=3, column=0, sticky="ew")
 
-        ttk.Label(panel, text="Worse-tool result", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(12, 0))
-        ttk.Entry(panel, textvariable=self.worse_path, width=40).grid(row=4, column=0, sticky="ew", pady=(2, 4))
-        ttk.Button(panel, text="Browse Result", command=self.browse_worse).grid(row=5, column=0, sticky="ew")
+        ttk.Label(panel, text="Worse-tool result (optional)", style="Card.TLabel").grid(
+            row=4, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Entry(panel, textvariable=self.worse_path, width=40).grid(row=5, column=0, sticky="ew", pady=(2, 4))
+        ttk.Button(panel, text="Browse Result", command=self.browse_worse).grid(row=6, column=0, sticky="ew")
 
-        ttk.Label(panel, text="Defect type", style="Card.TLabel").grid(row=6, column=0, sticky="w", pady=(12, 0))
+        ttk.Separator(panel).grid(row=7, column=0, sticky="ew", pady=14)
+        ttk.Label(panel, text="02  VIEW", style="Section.TLabel").grid(row=8, column=0, sticky="w")
+        ttk.Label(panel, text="Defect type", style="Card.TLabel").grid(row=9, column=0, sticky="w", pady=(8, 0))
         self.defect_combo = ttk.Combobox(panel, textvariable=self.defect_type, state="readonly", width=38)
-        self.defect_combo.grid(row=7, column=0, sticky="ew", pady=(2, 7))
+        self.defect_combo.grid(row=10, column=0, sticky="ew", pady=(2, 7))
         self.defect_combo.bind("<<ComboboxSelected>>", lambda _event: self._refresh_process_stage_options())
 
-        ttk.Label(panel, text="Process stage", style="Card.TLabel").grid(row=8, column=0, sticky="w")
+        ttk.Label(panel, text="Process stage", style="Card.TLabel").grid(row=11, column=0, sticky="w")
         self.stage_combo = ttk.Combobox(panel, textvariable=self.process_stage, state="readonly", width=38)
-        self.stage_combo.grid(row=9, column=0, sticky="ew", pady=(2, 7))
+        self.stage_combo.grid(row=12, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Special step-only rules", style="Card.TLabel").grid(row=10, column=0, sticky="w")
-        ttk.Entry(panel, textvariable=self.special_step_rules, width=40).grid(
-            row=11, column=0, sticky="ew", pady=(2, 4)
-        )
-        ttk.Label(
-            panel,
-            text="Example: Defect Type1: STEP10, STEP20; Defect Type2: STEP30",
-            style="Subtitle.TLabel",
-            wraplength=280,
-        ).grid(row=12, column=0, sticky="w", pady=(0, 7))
-
-        ttk.Label(panel, text="Time column", style="Card.TLabel").grid(row=13, column=0, sticky="w")
-        self.time_combo = ttk.Combobox(panel, textvariable=self.time_column, width=38)
-        self.time_combo.grid(row=14, column=0, sticky="ew", pady=(2, 7))
-
-        ttk.Label(panel, text="Chart data window", style="Card.TLabel").grid(row=15, column=0, sticky="w")
-        ttk.Combobox(
-            panel,
-            textvariable=self.chart_data_window,
-            values=list(DATA_WINDOW_LABELS.keys()),
-            state="readonly",
-            width=38,
-        ).grid(row=16, column=0, sticky="ew", pady=(2, 7))
-
-        ttk.Label(panel, text="Outlier handling", style="Card.TLabel").grid(row=17, column=0, sticky="w")
-        ttk.Combobox(
-            panel,
-            textvariable=self.outlier_handling,
-            values=list(OUTLIER_HANDLING_LABELS.keys()),
-            state="readonly",
-            width=38,
-        ).grid(row=18, column=0, sticky="ew", pady=(2, 7))
-
-        ttk.Label(panel, text="Chart grouping", style="Card.TLabel").grid(row=19, column=0, sticky="w")
+        ttk.Label(panel, text="Chart grouping", style="Card.TLabel").grid(row=13, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_group_mode,
             values=CHART_GROUP_MODES,
             state="readonly",
             width=38,
-        ).grid(row=20, column=0, sticky="ew", pady=(2, 7))
+        ).grid(row=14, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=21, column=0, sticky="w")
+        ttk.Label(panel, text="Chart type", style="Card.TLabel").grid(row=15, column=0, sticky="w")
         ttk.Combobox(
             panel,
             textvariable=self.chart_type,
-            values=[
-                CHART_TYPE_BOX,
-                CHART_TYPE_TREND,
-                CHART_TYPE_ALL_GROUPS,
-                CHART_TYPE_SEQUENCE,
-            ],
+            values=[CHART_TYPE_BOX, CHART_TYPE_TREND, CHART_TYPE_ALL_GROUPS, CHART_TYPE_SEQUENCE],
             state="readonly",
             width=38,
-        ).grid(row=22, column=0, sticky="ew", pady=(2, 8))
+        ).grid(row=16, column=0, sticky="ew", pady=(2, 7))
 
-        style_frame = ttk.LabelFrame(panel, text="Chart style", padding=7)
-        style_frame.grid(row=23, column=0, sticky="ew", pady=(0, 10))
-        style_frame.columnconfigure(1, weight=1)
-        self._spin_row(style_frame, 0, "Line width", self.line_width, 0.5, 8.0, 0.2)
-        self._spin_row(style_frame, 1, "Marker size", self.marker_size, 0.0, 12.0, 0.5)
-        ttk.Label(style_frame, text="Color").grid(row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Separator(panel).grid(row=17, column=0, sticky="ew", pady=14)
+        ttk.Label(panel, text="03  DATA PREPARATION", style="Section.TLabel").grid(row=18, column=0, sticky="w")
+        ttk.Label(panel, text="Time column", style="Card.TLabel").grid(row=19, column=0, sticky="w", pady=(8, 0))
+        self.time_combo = ttk.Combobox(panel, textvariable=self.time_column, width=38)
+        self.time_combo.grid(row=20, column=0, sticky="ew", pady=(2, 7))
+
+        ttk.Label(panel, text="Chart data window", style="Card.TLabel").grid(row=21, column=0, sticky="w")
         ttk.Combobox(
-            style_frame,
-            textvariable=self.color_scheme,
-            values=["Tableau", "Viridis", "Plasma", "Custom single"],
+            panel,
+            textvariable=self.chart_data_window,
+            values=list(DATA_WINDOW_LABELS.keys()),
             state="readonly",
-            width=18,
-        ).grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=(4, 0))
-        ttk.Label(style_frame, text="Custom").grid(row=3, column=0, sticky="w", pady=(4, 0))
-        ttk.Entry(style_frame, textvariable=self.custom_color).grid(
-            row=3, column=1, sticky="ew", padx=(6, 0), pady=(4, 0)
-        )
-        ttk.Label(style_frame, text="Y min").grid(row=4, column=0, sticky="w", pady=(4, 0))
-        ttk.Entry(style_frame, textvariable=self.y_min, width=10).grid(
-            row=4, column=1, sticky="ew", padx=(6, 0), pady=(4, 0)
-        )
-        ttk.Label(style_frame, text="Y max").grid(row=5, column=0, sticky="w", pady=(4, 0))
-        ttk.Entry(style_frame, textvariable=self.y_max, width=10).grid(
-            row=5, column=1, sticky="ew", padx=(6, 0), pady=(4, 0)
-        )
+            width=38,
+        ).grid(row=22, column=0, sticky="ew", pady=(2, 7))
 
-        ttk.Button(panel, text="Plot", style="Accent.TButton", command=self.start_plot).grid(
-            row=24, column=0, sticky="ew", pady=(0, 5)
+        ttk.Label(panel, text="Outlier handling", style="Card.TLabel").grid(row=23, column=0, sticky="w")
+        ttk.Combobox(
+            panel,
+            textvariable=self.outlier_handling,
+            values=list(OUTLIER_HANDLING_LABELS.keys()),
+            state="readonly",
+            width=38,
+        ).grid(row=24, column=0, sticky="ew", pady=(2, 7))
+
+        ttk.Label(panel, text="Special step-only rules", style="Card.TLabel").grid(row=25, column=0, sticky="w")
+        ttk.Entry(panel, textvariable=self.special_step_rules, width=40).grid(
+            row=26, column=0, sticky="ew", pady=(2, 4)
         )
-        ttk.Button(panel, text="Save PNG", command=self.save_png).grid(row=25, column=0, sticky="ew")
+        ttk.Label(
+            panel,
+            text="Example: Defect Type1: STEP10, STEP20; Defect Type2: STEP30",
+            style="Subtitle.TLabel",
+            wraplength=280,
+        ).grid(row=27, column=0, sticky="w", pady=(0, 10))
+
+        ttk.Button(panel, text="Plot Chart", style="Accent.TButton", command=self.start_plot).grid(
+            row=28, column=0, sticky="ew", pady=(2, 6)
+        )
+        ttk.Button(panel, text="Chart Style...", style="Quiet.TButton", command=self.open_chart_style_dialog).grid(
+            row=29, column=0, sticky="ew"
+        )
 
         chart_frame = ttk.Frame(self.chart_tab, style="Card.TFrame", padding=8)
         chart_frame.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
         chart_frame.columnconfigure(0, weight=1)
-        chart_frame.rowconfigure(0, weight=1)
+        chart_frame.rowconfigure(1, weight=1)
+        toolbar = ttk.Frame(chart_frame, style="Toolbar.TFrame", padding=(10, 7))
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        toolbar.columnconfigure(0, weight=1)
+        ttk.Label(toolbar, textvariable=self.selected_chart_item, style="Toolbar.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Button(toolbar, text="Edit Selected", command=self.edit_selected_chart_item).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+        ttk.Button(toolbar, text="Save PNG", command=self.save_png).grid(row=0, column=2, padx=(8, 0))
         self.fig, self.ax = plt.subplots(figsize=(8.8, 5.8), dpi=110)
         self.ax.set_title("Load raw data to begin")
         self.ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
-        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+        self.canvas.mpl_connect("pick_event", self._on_chart_pick)
 
     def _spin_row(
         self,
@@ -511,6 +533,182 @@ class DefectWorseToolApp(tk.Tk):
             textvariable=variable,
             width=8,
         ).grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=(4 if row else 0, 0))
+
+    def open_chart_style_dialog(self) -> None:
+        if self.chart_style_window is not None and self.chart_style_window.winfo_exists():
+            self.chart_style_window.lift()
+            self.chart_style_window.focus_force()
+            return
+
+        window = tk.Toplevel(self)
+        self.chart_style_window = window
+        window.title("Chart Style")
+        window.geometry("430x470")
+        window.resizable(False, False)
+        window.transient(self)
+        window.configure(background="#F1EFE9")
+        window.protocol("WM_DELETE_WINDOW", self._close_chart_style_dialog)
+        body = ttk.Frame(window, style="Card.TFrame", padding=18)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+        body.columnconfigure(0, weight=1)
+
+        ttk.Label(body, text="CHART STYLE", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            body,
+            text="Global defaults apply to the next redraw. Individual edits override them.",
+            style="Card.TLabel",
+            wraplength=370,
+        ).grid(row=1, column=0, sticky="w", pady=(4, 12))
+
+        box_frame = ttk.LabelFrame(body, text="Box chart", padding=10)
+        box_frame.grid(row=2, column=0, sticky="ew")
+        box_frame.columnconfigure(1, weight=1)
+        self._spin_row(box_frame, 0, "Outline width", self.box_line_width, 0.5, 8.0, 0.2)
+        annotation_frame = ttk.Frame(box_frame, style="Card.TFrame")
+        annotation_frame.grid(row=1, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(annotation_frame, text="Show labels:", style="Card.TLabel").pack(side="left")
+        ttk.Checkbutton(annotation_frame, text="Count", variable=self.show_box_count).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(annotation_frame, text="Median", variable=self.show_box_median).pack(side="left", padx=(8, 0))
+        ttk.Checkbutton(annotation_frame, text="Mean", variable=self.show_box_mean).pack(side="left", padx=(8, 0))
+
+        trend_frame = ttk.LabelFrame(body, text="Trend chart", padding=10)
+        trend_frame.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        trend_frame.columnconfigure(1, weight=1)
+        self._spin_row(trend_frame, 0, "Line width", self.line_width, 0.5, 8.0, 0.2)
+        self._spin_row(trend_frame, 1, "Marker size", self.marker_size, 0.0, 12.0, 0.5)
+        ttk.Label(trend_frame, text="Line palette").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(
+            trend_frame,
+            textvariable=self.color_scheme,
+            values=["Distinct", "Viridis", "Plasma", "Custom single"],
+            state="readonly",
+            width=18,
+        ).grid(row=2, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        ttk.Label(trend_frame, text="Custom color").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        color_row = ttk.Frame(trend_frame, style="Card.TFrame")
+        color_row.grid(row=3, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        color_row.columnconfigure(0, weight=1)
+        ttk.Entry(color_row, textvariable=self.custom_color).grid(row=0, column=0, sticky="ew")
+        ttk.Button(color_row, text="Choose", command=lambda: self._choose_color(self.custom_color)).grid(
+            row=0, column=1, padx=(5, 0)
+        )
+
+        axis_frame = ttk.LabelFrame(body, text="Y axis", padding=10)
+        axis_frame.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        axis_frame.columnconfigure(1, weight=1)
+        ttk.Label(axis_frame, text="Minimum").grid(row=0, column=0, sticky="w")
+        ttk.Entry(axis_frame, textvariable=self.y_min).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Label(axis_frame, text="Maximum").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(axis_frame, textvariable=self.y_max).grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+
+        actions = ttk.Frame(body, style="Card.TFrame")
+        actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
+        actions.columnconfigure(0, weight=1)
+        ttk.Button(actions, text="Apply & Redraw", style="Accent.TButton", command=self._apply_chart_style).grid(
+            row=0, column=0, sticky="ew"
+        )
+        ttk.Button(actions, text="Close", command=self._close_chart_style_dialog).grid(
+            row=0, column=1, padx=(8, 0)
+        )
+
+    def _close_chart_style_dialog(self) -> None:
+        if self.chart_style_window is not None:
+            self.chart_style_window.destroy()
+        self.chart_style_window = None
+
+    def _apply_chart_style(self) -> None:
+        try:
+            self._get_y_limits()
+            float(self.line_width.get())
+            float(self.marker_size.get())
+            float(self.box_line_width.get())
+            if self.color_scheme.get() == "Custom single" and not is_color_like(self.custom_color.get().strip()):
+                raise ValueError("Custom color is not a valid Matplotlib color.")
+        except (tk.TclError, ValueError) as exc:
+            messagebox.showwarning("Invalid chart style", str(exc), parent=self.chart_style_window)
+            return
+        if self.raw_df is not None and self.defect_type.get().strip() and self.process_stage.get().strip():
+            self.start_plot()
+
+    def _choose_color(self, variable: tk.StringVar) -> None:
+        chosen = colorchooser.askcolor(color=variable.get().strip() or "#1565C0", parent=self)[1]
+        if chosen:
+            variable.set(chosen)
+
+    def _on_chart_pick(self, event) -> None:
+        metadata = self.chart_artist_registry.get(event.artist)
+        if metadata is None:
+            return
+        self.selected_chart_artist = event.artist
+        self.selected_chart_item.set(
+            "Selected {}: {}".format(metadata["kind"], metadata["label"])
+        )
+        self.status.set("Selected {}. Use Edit Selected to change its color or width.".format(metadata["label"]))
+
+    def edit_selected_chart_item(self) -> None:
+        artist = self.selected_chart_artist
+        metadata = self.chart_artist_registry.get(artist)
+        if metadata is None:
+            messagebox.showinfo("Select a chart item", "Click a box or trend line first.")
+            return
+
+        color_var = tk.StringVar(value=str(metadata["color"]))
+        width_var = tk.DoubleVar(value=float(metadata["linewidth"]))
+        window = tk.Toplevel(self)
+        window.title("Edit Selected Chart Item")
+        window.geometry("390x230")
+        window.resizable(False, False)
+        window.transient(self)
+        body = ttk.Frame(window, style="Card.TFrame", padding=18)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
+        body.columnconfigure(1, weight=1)
+        ttk.Label(body, text="SELECTED ITEM", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(body, text=str(metadata["label"]), style="Card.TLabel").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(4, 14)
+        )
+        ttk.Label(body, text="Color", style="Card.TLabel").grid(row=2, column=0, sticky="w")
+        color_row = ttk.Frame(body, style="Card.TFrame")
+        color_row.grid(row=2, column=1, sticky="ew", padx=(8, 0))
+        color_row.columnconfigure(0, weight=1)
+        ttk.Entry(color_row, textvariable=color_var).grid(row=0, column=0, sticky="ew")
+        ttk.Button(color_row, text="Choose", command=lambda: self._choose_color(color_var)).grid(
+            row=0, column=1, padx=(5, 0)
+        )
+        ttk.Label(body, text="Width", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 0))
+        ttk.Spinbox(body, from_=0.5, to=12.0, increment=0.2, textvariable=width_var).grid(
+            row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
+        )
+
+        def apply_selected_style() -> None:
+            color = color_var.get().strip()
+            try:
+                width = float(width_var.get())
+                if not is_color_like(color):
+                    raise ValueError("Enter a valid Matplotlib color.")
+                if width <= 0:
+                    raise ValueError("Width must be greater than zero.")
+            except (tk.TclError, ValueError) as exc:
+                messagebox.showwarning("Invalid item style", str(exc), parent=window)
+                return
+            if metadata["kind"] == "box":
+                artist.set_facecolor(color)
+                artist.set_edgecolor(color)
+            else:
+                artist.set_color(color)
+            artist.set_linewidth(width)
+            metadata["color"] = color
+            metadata["linewidth"] = width
+            self.artist_style_overrides[(str(metadata["kind"]), str(metadata["key"]))] = {
+                "color": color,
+                "linewidth": width,
+            }
+            self.canvas.draw_idle()
+            self.status.set("Updated {} style.".format(metadata["label"]))
+            window.destroy()
+
+        ttk.Button(body, text="Apply", style="Accent.TButton", command=apply_selected_style).grid(
+            row=4, column=0, columnspan=2, sticky="ew", pady=(16, 0)
+        )
 
     def browse_raw(self) -> None:
         path = filedialog.askopenfilename(filetypes=DATA_FILE_TYPES)
@@ -1097,8 +1295,36 @@ class DefectWorseToolApp(tk.Tk):
                 values.append(value)
             self.result_tree.insert("", "end", values=values)
 
+    def _reset_chart_artists(self) -> None:
+        self.chart_artist_registry = {}
+        self.selected_chart_artist = None
+        self.selected_chart_item.set("No chart item selected")
+
+    def _register_chart_artist(
+        self,
+        artist,
+        kind: str,
+        key: str,
+        label: str,
+        color: object,
+        linewidth: float,
+    ) -> None:
+        artist.set_picker(6 if kind == "line" else True)
+        self.chart_artist_registry[artist] = {
+            "kind": kind,
+            "key": key,
+            "label": label,
+            "color": to_hex(color),
+            "linewidth": float(linewidth),
+        }
+
+    def _artist_style(self, kind: str, key: str, color: object, linewidth: float) -> Tuple[object, float]:
+        override = self.artist_style_overrides.get((kind, str(key)), {})
+        return override.get("color", color), float(override.get("linewidth", linewidth))
+
     def _draw_box(self, defect: str, stage: str, df: pd.DataFrame) -> None:
         self.fig.clear()
+        self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
         grouped_parts = []
         for tool, part in df.groupby("Chart_Group"):
@@ -1129,13 +1355,12 @@ class DefectWorseToolApp(tk.Tk):
         means = [item[5] for item in grouped_parts]
         box_width = 0.64 if pixels_per_box >= 110 else 0.56 if pixels_per_box >= 70 else 0.46
         raw_point_size = 18 if pixels_per_box >= 110 else 14 if pixels_per_box >= 70 else 10
-        box_color = "#6E9F8F"
         ax.set_facecolor("#FBFAF7")
         self.fig.patch.set_facecolor("#F4F1EA")
         box = ax.boxplot(
             groups,
             labels=labels,
-            showmeans=True,
+            showmeans=self.show_box_mean.get(),
             patch_artist=True,
             widths=box_width,
             medianprops={"color": "#C23B22", "linewidth": 2.2},
@@ -1155,61 +1380,81 @@ class DefectWorseToolApp(tk.Tk):
                 "alpha": 0.35,
             },
         )
-        for patch in box["boxes"]:
+        rank_colors = self._box_rank_colors(len(groups))
+        rendered_box_colors: List[object] = []
+        group_label = self._chart_group_label(df)
+        for patch, group_info, rank_color in zip(box["boxes"], grouped_parts, rank_colors):
+            tool, display_label = group_info[0], group_info[1]
+            style_key = "{}|{}|{}|{}".format(defect, stage, group_label, tool)
+            box_color, outline_width = self._artist_style(
+                "box", style_key, rank_color, float(self.box_line_width.get())
+            )
+            rendered_box_colors.append(box_color)
             patch.set_facecolor(box_color)
             patch.set_alpha(0.72)
-            patch.set_edgecolor("#294C46")
-            patch.set_linewidth(1.1)
+            patch.set_edgecolor(box_color)
+            patch.set_linewidth(outline_width)
+            self._register_chart_artist(
+                patch,
+                "box",
+                style_key,
+                display_label,
+                box_color,
+                outline_width,
+            )
         value_span = max(max(group) for group in groups) - min(min(group) for group in groups)
         annotation_offset = max(value_span * 0.025, 0.05)
-        for index, values in enumerate(groups, start=1):
+        show_any_stats = any(
+            (self.show_box_count.get(), self.show_box_median.get(), self.show_box_mean.get())
+        )
+        for index, (values, point_color) in enumerate(zip(groups, rendered_box_colors), start=1):
             ax.scatter(
                 self._jitter_positions(index, len(values)),
                 values,
                 s=raw_point_size,
-                color=box_color,
+                color=point_color,
                 edgecolors="#FFFFFF",
                 linewidths=0.35,
                 alpha=0.55,
                 zorder=3,
             )
-            top = max(values)
-            if pixels_per_box >= 105:
-                stats_text = "N={}\nMedian={:.2f}\nMean={:.2f}".format(
-                    counts[index - 1],
-                    medians[index - 1],
-                    means[index - 1],
+            stats_lines: List[str] = []
+            if self.show_box_count.get():
+                stats_lines.append("N={}".format(counts[index - 1]))
+            if self.show_box_median.get():
+                stats_lines.append("Median={:.2f}".format(medians[index - 1]))
+            if self.show_box_mean.get():
+                stats_lines.append("Mean={:.2f}".format(means[index - 1]))
+            if stats_lines:
+                ax.text(
+                    index,
+                    max(values) + annotation_offset,
+                    "\n".join(stats_lines),
+                    ha="center",
+                    va="bottom",
+                    fontsize=stats_font_size,
+                    color="#37474F",
                 )
-            else:
-                stats_text = "N={}\nMed={:.2f} Avg={:.2f}".format(
-                    counts[index - 1],
-                    medians[index - 1],
-                    means[index - 1],
-                )
-            ax.text(
-                index,
-                top + annotation_offset,
-                stats_text,
-                ha="center",
-                va="bottom",
-                fontsize=stats_font_size,
-                color="#37474F",
-            )
-        group_label = self._chart_group_label(df)
-        ax.set_title("{} | {} | Box by {} (median high to low)".format(defect, stage, group_label))
+        ax.set_title("{} | {} | Box by {} (red high, blue low)".format(defect, stage, group_label))
         ax.set_xlabel("{} (median high to low)".format(group_label))
         ax.set_ylabel("Defect count")
         ax.tick_params(axis="x", rotation=0 if compact_labels else 45)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7D4CC", linewidth=0.7, alpha=0.7)
         ax.set_axisbelow(True)
-        ax.margins(y=0.20 if stats_font_size >= 10 else 0.16)
+        if show_any_stats:
+            ax.margins(y=0.20 if stats_font_size >= 10 else 0.16)
+        else:
+            ax.margins(y=0.08)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.legend(
-            handles=[
+        legend_handles = [
+                Line2D([0], [0], color="#B40426", linewidth=6, label="Higher median"),
+                Line2D([0], [0], color="#3B4CC0", linewidth=6, label="Lower median"),
                 Line2D([0], [0], color="#C23B22", linewidth=2.2, label="Median"),
-                Line2D(
+        ]
+        if self.show_box_mean.get():
+            legend_handles.append(Line2D(
                     [0],
                     [0],
                     marker="D",
@@ -1217,25 +1462,32 @@ class DefectWorseToolApp(tk.Tk):
                     markerfacecolor="#F2B134",
                     markeredgecolor="#263238",
                     label="Mean",
-                ),
-                Line2D(
+                ))
+        legend_handles.append(Line2D(
                     [0],
                     [0],
                     marker="o",
                     color="none",
-                    markerfacecolor=box_color,
+                    markerfacecolor="#7B8794",
                     markeredgecolor="#FFFFFF",
                     label="Raw data",
-                ),
-            ],
+                ))
+        ax.legend(
+            handles=legend_handles,
             loc="upper right",
             frameon=False,
         )
         if compact_labels:
-            mapping_lines = [
-                "{} = {} | med {:.2f} | avg {:.2f}".format(label, tool, median, mean)
-                for label, tool, median, mean in zip(labels, full_labels, medians, means)
-            ]
+            mapping_lines = []
+            for label, tool, count, median, mean in zip(labels, full_labels, counts, medians, means):
+                stats = []
+                if self.show_box_count.get():
+                    stats.append("n {}".format(count))
+                if self.show_box_median.get():
+                    stats.append("med {:.2f}".format(median))
+                if self.show_box_mean.get():
+                    stats.append("avg {:.2f}".format(mean))
+                mapping_lines.append("{} = {}{}".format(label, tool, " | " + " | ".join(stats) if stats else ""))
             ax.text(
                 1.01,
                 1.0,
@@ -1261,24 +1513,29 @@ class DefectWorseToolApp(tk.Tk):
         self._apply_y_limits(ax)
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("Box chart rendered. Groups: {}".format(len(groups)))
+        self.status.set("Box chart rendered. Click a box to edit it. Groups: {}".format(len(groups)))
 
     def _draw_trend(self, defect: str, stage: str, time_col: str, trend: pd.DataFrame) -> None:
         self.fig.clear()
+        self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
         groups = self._ordered_trend_groups(trend)
         colors = self._colors(len(groups))
         for color, tool in zip(colors, groups):
             part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
-            ax.plot(
+            label = self._display_tool_label(part, str(tool))
+            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
+            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
+            line, = ax.plot(
                 part["Selected_Time"],
                 part[defect],
                 marker="o" if self.marker_size.get() > 0 else None,
                 markersize=self.marker_size.get(),
-                linewidth=self.line_width.get(),
-                color=color,
-                label=self._display_tool_label(part, str(tool)),
+                linewidth=line_width,
+                color=line_color,
+                label=label,
             )
+            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
         ax.set_title("{} | {} | Trend overlay by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
         ax.set_ylabel("Mean defect count")
@@ -1288,7 +1545,7 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.autofmt_xdate()
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("Trend chart rendered.")
+        self.status.set("Trend chart rendered. Click a line to edit it.")
 
     def _draw_trend_all_chambers(
         self,
@@ -1298,20 +1555,25 @@ class DefectWorseToolApp(tk.Tk):
         trend: pd.DataFrame,
     ) -> None:
         self.fig.clear()
+        self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
         groups = self._ordered_trend_groups(trend)
         colors = self._colors(len(groups))
         for color, tool in zip(colors, groups):
             part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
-            ax.plot(
+            label = self._display_tool_label(part, str(tool))
+            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
+            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
+            line, = ax.plot(
                 part["Selected_Time"],
                 part[defect],
                 marker="o" if self.marker_size.get() > 0 else None,
                 markersize=self.marker_size.get(),
-                linewidth=self.line_width.get(),
-                color=color,
-                label=self._display_tool_label(part, str(tool)),
+                linewidth=line_width,
+                color=line_color,
+                label=label,
             )
+            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
         ax.set_title("{} | {} | All groups trend by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
         ax.set_ylabel("Mean defect count")
@@ -1323,7 +1585,7 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.autofmt_xdate()
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("All-group trend rendered on one axis. Groups: {}".format(len(groups)))
+        self.status.set("All-group trend rendered. Click a line to edit it. Groups: {}".format(len(groups)))
 
     def _draw_trend_sequence_by_tool(
         self,
@@ -1333,6 +1595,7 @@ class DefectWorseToolApp(tk.Tk):
         trend: pd.DataFrame,
     ) -> None:
         self.fig.clear()
+        self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
         groups = self._ordered_trend_groups(trend)
         colors = self._colors(len(groups))
@@ -1347,19 +1610,23 @@ class DefectWorseToolApp(tk.Tk):
             if part.empty:
                 continue
             xs = list(range(current_x, current_x + len(part)))
-            ax.plot(
+            label = self._display_tool_label(part, str(tool))
+            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
+            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
+            line, = ax.plot(
                 xs,
                 part[defect],
                 marker="o" if self.marker_size.get() > 0 else None,
                 markersize=self.marker_size.get(),
-                linewidth=self.line_width.get(),
-                color=color,
-                label=self._display_tool_label(part, str(tool)),
+                linewidth=line_width,
+                color=line_color,
+                label=label,
             )
+            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
             x_positions.extend(xs)
             x_labels.extend(part["Selected_Time"].dt.strftime("%m-%d %H:%M").tolist())
             tool_labels.append(
-                (sum(xs) / float(len(xs)), self._display_tool_label(part, str(tool)), color)
+                (sum(xs) / float(len(xs)), label, line_color)
             )
             current_x += len(part) + 1
             if index < len(groups) - 1:
@@ -1408,7 +1675,7 @@ class DefectWorseToolApp(tk.Tk):
         ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=True, framealpha=0.9)
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("Sequential trend rendered on one axis. Groups: {}".format(len(groups)))
+        self.status.set("Sequential trend rendered. Click a line to edit it. Groups: {}".format(len(groups)))
 
     def _ordered_trend_groups(self, trend: pd.DataFrame) -> List[str]:
         order = (
@@ -1423,6 +1690,15 @@ class DefectWorseToolApp(tk.Tk):
             return 0.0
         figure_width = float(self.fig.get_figwidth()) * float(self.fig.dpi)
         return figure_width / float(group_count)
+
+    @staticmethod
+    def _box_rank_colors(group_count: int) -> List[object]:
+        if group_count <= 0:
+            return []
+        return [
+            plt.cm.coolwarm(1.0 - index / float(max(1, group_count - 1)))
+            for index in range(group_count)
+        ]
 
     def _box_stats_font_size(self, pixels_per_box: float) -> float:
         if pixels_per_box >= 140:
@@ -1456,8 +1732,13 @@ class DefectWorseToolApp(tk.Tk):
         if scheme == "Plasma":
             cmap = plt.cm.get_cmap("plasma", count)
             return [cmap(i) for i in range(count)]
-        base = list(plt.cm.tab20.colors)
-        return [base[i % len(base)] for i in range(count)]
+        base = list(plt.cm.tab20.colors) + list(plt.cm.tab20b.colors) + list(plt.cm.tab20c.colors)
+        random.Random(73013 + count).shuffle(base)
+        if count <= len(base):
+            return base[:count]
+        extra_count = count - len(base)
+        extra = [plt.cm.hsv(i / float(max(1, extra_count))) for i in range(extra_count)]
+        return base + extra
 
     def _jitter_positions(self, center: int, count: int) -> List[float]:
         if count <= 1:
