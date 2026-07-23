@@ -16,6 +16,14 @@ Override keys include defect, process, chart-group type, and group value. Overri
 
 `box_label_font_size=0` keeps `_box_stats_font_size()` in adaptive mode. Any positive value overrides the adaptive result for the main Box statistics and compact tool mapping.
 
+Data-completeness rules:
+
+- `calculate_recent_trimmed_bsl()` operates on a temporary numeric Series. Its quantile trimming must never be reused as the DataFrame passed to `summarize_one_defect()` or chart preparation.
+- `prepare_trend_data()` keeps one row per valid chart input row and performs a stable Tool/time/source-order sort. Do not reintroduce the former Tool/time `groupby().mean()` because it collapsed multiple wafers into one point.
+- `add_equal_spacing_index()` assigns a 1-based observation index within each Tool without dropping rows.
+- `filter_by_recent_scan_time()` rejects invalid Scan Time values rather than silently excluding them from recent-window analysis.
+- `_filter_chart_group_mode()` uses explicit missing-ID groups rather than dropping rows.
+
 When adding a new selectable chart type, call `_reset_chart_artists()`, apply `_artist_style()` before drawing, then call `_register_chart_artist()` with a context-specific key. Keep Matplotlib drawing on the Tk main thread through `_poll_results()`.
 
 ---

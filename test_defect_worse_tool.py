@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pandas as pd
 
@@ -8,11 +10,14 @@ from defect_worse_tool import (
     SPECIAL_STAGE_ID,
     add_grouping_columns,
     build_bsl_lookup,
+    calculate_recent_trimmed_bsl,
+    filter_by_recent_scan_time,
     filter_outliers_for_defect,
     handle_outliers_for_defect,
     OUTLIER_HANDLING_CAP,
     OUTLIER_HANDLING_FILTER,
     parse_special_process_rules,
+    read_table,
     summarize_one_defect,
 )
 from defect_worse_ui import (
@@ -191,6 +196,69 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
         self.assertEqual(result.iloc[0]["Outlier Handling"], OUTLIER_HANDLING_CAP)
         self.assertAlmostEqual(chart["D1"].mean(), result.iloc[0]["Mean_Count"])
         self.assertAlmostEqual(chart["D1"].median(), result.iloc[0]["Median_Count"])
+
+    def test_recent_trimmed_bsl_does_not_filter_summary_rows(self) -> None:
+        values = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 100.0]
+        raw = add_grouping_columns(
+            pd.DataFrame(
+                [
+                    {
+                        "Lot_ID": "L1",
+                        "Wafer_NO": index,
+                        "Scan_Time": "2026-07-{:02d}".format(index),
+                        "D1": value,
+                        "Stage_ID": "S1",
+                        "Step_ID": "P1",
+                        "Equipment_ID": "KP1001",
+                        "Chamber_ID": "C1",
+                    }
+                    for index, value in enumerate(values, start=1)
+                ]
+            )
+        )
+        original = raw.copy(deep=True)
+
+        recent_bsl = calculate_recent_trimmed_bsl(raw, "D1")
+        result = summarize_one_defect(
+            raw,
+            "D1",
+            {},
+            {"d1": 0.0},
+            min_wafers=1,
+            outlier_sigma=100.0,
+            recent_trimmed_bsl=recent_bsl,
+        )
+
+        pd.testing.assert_frame_equal(raw, original)
+        self.assertAlmostEqual(recent_bsl, 4.5)
+        self.assertEqual(result.iloc[0]["Row_Count"], len(values))
+        self.assertAlmostEqual(result.iloc[0]["Mean_Count"], sum(values) / len(values))
+        self.assertAlmostEqual(result.iloc[0]["Recent Trimmed BSL"], 4.5)
+
+    def test_recent_window_rejects_invalid_time_instead_of_dropping_row(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "Scan_Time": ["2026-07-01", "not-a-time"],
+                "D1": [1.0, 2.0],
+            }
+        )
+
+        with self.assertRaisesRegex(ValueError, "avoid silently omitting data"):
+            filter_by_recent_scan_time(raw, data_window="14d")
+
+    def test_csv_reader_preserves_na_like_tool_identifiers(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "input.csv"
+            path.write_text(
+                "LOT_ID,WAFER_NO,SCAN_TIME,STAGE,STEP_ID,EQUIPMENT_ID,CHAMBER,D1\n"
+                "L1,1,2026-07-01,S1,P1,NA,N/A,3\n",
+                encoding="utf-8",
+            )
+
+            loaded = read_table(str(path))
+
+        self.assertEqual(loaded.loc[0, "Equipment_ID"], "NA")
+        self.assertEqual(loaded.loc[0, "Chamber_ID"], "N/A")
 
 
 if __name__ == "__main__":

@@ -69,8 +69,45 @@ CHART_GROUP_MODE_EQUIPMENT = "By Equipment ID"
 CHART_GROUP_MODES = (CHART_GROUP_MODE_CHAMBER, CHART_GROUP_MODE_EQUIPMENT)
 CHART_TYPE_BOX = "Box chart by selected group"
 CHART_TYPE_TREND = "Trend overlay by time"
-CHART_TYPE_ALL_GROUPS = "Trend all groups same axis"
+CHART_TYPE_ALL_GROUPS = "Trend all groups equal spacing"
 CHART_TYPE_SEQUENCE = "Sequential trend by selected group"
+
+
+def prepare_trend_data(df: pd.DataFrame, defect: str, time_col: str) -> pd.DataFrame:
+    trend = df.copy()
+    trend["Selected_Time"] = pd.to_datetime(trend[time_col], errors="coerce")
+    invalid_time_count = int(trend["Selected_Time"].isna().sum())
+    if invalid_time_count:
+        raise ValueError(
+            "{} row(s) have an invalid {}. Trend drawing stopped to avoid silently omitting data.".format(
+                invalid_time_count,
+                time_col,
+            )
+        )
+    trend[defect] = pd.to_numeric(trend[defect], errors="coerce")
+    invalid_value_count = int(trend[defect].isna().sum())
+    if invalid_value_count:
+        raise ValueError(
+            "{} row(s) have a non-numeric or blank value for {}. Trend drawing stopped to avoid silently omitting data.".format(
+                invalid_value_count,
+                defect,
+            )
+        )
+    trend["_Trend_Row_Order"] = list(range(len(trend)))
+    trend = trend.sort_values(
+        ["Chart_Group", "Selected_Time", "_Trend_Row_Order"],
+        kind="mergesort",
+    ).drop(columns=["_Trend_Row_Order"])
+    return trend.reset_index(drop=True)
+
+
+def add_equal_spacing_index(trend: pd.DataFrame) -> pd.DataFrame:
+    spaced = trend.copy()
+    spaced["Observation_Index"] = (
+        spaced.groupby("Chart_Group", sort=False, dropna=False).cumcount() + 1
+    )
+    return spaced
+
 
 class DefectWorseToolApp(tk.Tk):
     def __init__(self) -> None:
@@ -1100,17 +1137,7 @@ class DefectWorseToolApp(tk.Tk):
             if chart_type == CHART_TYPE_BOX:
                 self.result_queue.put(("box", (defect, filter_label, df)))
                 return
-            df["Selected_Time"] = pd.to_datetime(df[time_col], errors="coerce")
-            trend = (
-                df.dropna(subset=["Selected_Time"])
-                .groupby(
-                    ["Selected_Time", "Chart_Group", "Chart_Group_Type"],
-                    dropna=False,
-                )[defect]
-                .mean()
-                .reset_index()
-                .sort_values(["Chart_Group", "Selected_Time"])
-            )
+            trend = prepare_trend_data(df, defect, time_col)
             if trend.empty:
                 raise ValueError("{} cannot be parsed for trend chart.".format(time_col))
             if chart_type == CHART_TYPE_ALL_GROUPS:
@@ -1306,14 +1333,16 @@ class DefectWorseToolApp(tk.Tk):
         if chart_group_mode == CHART_GROUP_MODE_CHAMBER:
             source_column = "Chamber_ID"
             group_type = "Chamber"
+            missing_label = "(Missing Chamber)"
         elif chart_group_mode == CHART_GROUP_MODE_EQUIPMENT:
             source_column = "Equipment_ID"
             group_type = "Equipment ID"
+            missing_label = "(Missing Equipment ID)"
         else:
             raise ValueError("Unsupported chart grouping mode: {}".format(chart_group_mode))
         group_values = df[source_column].fillna("").astype(str).str.strip()
-        grouped = df.loc[group_values != ""].copy()
-        grouped["Chart_Group"] = group_values.loc[grouped.index]
+        grouped = df.copy()
+        grouped["Chart_Group"] = group_values.mask(group_values == "", missing_label)
         grouped["Chart_Group_Type"] = group_type
         return grouped
 
@@ -1573,7 +1602,7 @@ class DefectWorseToolApp(tk.Tk):
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
         ax.set_title("{} | {} | Trend overlay by {}".format(defect, stage, time_col))
         ax.set_xlabel(time_col)
-        ax.set_ylabel("Mean defect count")
+        ax.set_ylabel("Defect count")
         ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.legend(loc="best", fontsize=8, frameon=True, framealpha=0.88)
         self._apply_y_limits(ax)
@@ -1592,15 +1621,18 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.clear()
         self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
-        groups = self._ordered_trend_groups(trend)
+        spaced_trend = add_equal_spacing_index(trend)
+        groups = self._ordered_trend_groups(spaced_trend)
         colors = self._colors(len(groups))
+        max_observations = 0
+        total_points = 0
         for color, tool in zip(colors, groups):
-            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
+            part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
             label = self._display_tool_label(part, str(tool))
             style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
             line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
             line, = ax.plot(
-                part["Selected_Time"],
+                part["Observation_Index"],
                 part[defect],
                 marker="o" if self.marker_size.get() > 0 else None,
                 markersize=self.marker_size.get(),
@@ -1609,18 +1641,29 @@ class DefectWorseToolApp(tk.Tk):
                 label=label,
             )
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-        ax.set_title("{} | {} | All groups trend by {}".format(defect, stage, time_col))
-        ax.set_xlabel(time_col)
-        ax.set_ylabel("Mean defect count")
+            max_observations = max(max_observations, len(part))
+            total_points += len(part)
+        ax.set_title("{} | {} | All groups trend (equal point spacing)".format(defect, stage))
+        ax.set_xlabel("Observation order within each group (sorted by {}; equal spacing)".format(time_col))
+        ax.set_ylabel("Defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
+        ax.xaxis.set_major_locator(
+            MaxNLocator(nbins=min(12, max(1, max_observations)), integer=True)
+        )
+        if max_observations:
+            ax.set_xlim(0.5, max_observations + 0.5)
         ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.set_axisbelow(True)
         ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=True, framealpha=0.9)
         self._apply_y_limits(ax)
-        self.fig.autofmt_xdate()
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("All-group trend rendered. Click a line to edit it. Groups: {}".format(len(groups)))
+        self.status.set(
+            "All-group equal-spacing trend rendered with {} point(s). Groups: {}.".format(
+                total_points,
+                len(groups),
+            )
+        )
 
     def _draw_trend_sequence_by_tool(
         self,
@@ -1703,7 +1746,7 @@ class DefectWorseToolApp(tk.Tk):
         ax.set_xticklabels(shown_labels, rotation=55, ha="right", fontsize=8)
         ax.set_title("{} | {} | Sequential trend by selected group".format(defect, stage))
         ax.set_xlabel("{} sorted within each group, groups appended left to right".format(time_col))
-        ax.set_ylabel("Mean defect count")
+        ax.set_ylabel("Defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.set_axisbelow(True)

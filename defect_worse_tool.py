@@ -79,9 +79,15 @@ def read_table(path: str, sheet_name: Optional[str] = None) -> pd.DataFrame:
     file_path = Path(path)
     suffix = file_path.suffix.lower()
     if suffix == ".csv":
-        return normalize_columns(pd.read_csv(file_path))
+        return normalize_columns(pd.read_csv(file_path, keep_default_na=False))
     if suffix in {".xlsx", ".xlsm", ".xls"}:
-        return normalize_columns(pd.read_excel(file_path, sheet_name=parse_sheet_name(sheet_name)))
+        return normalize_columns(
+            pd.read_excel(
+                file_path,
+                sheet_name=parse_sheet_name(sheet_name),
+                keep_default_na=False,
+            )
+        )
     raise ValueError("Unsupported input file type: {}. Use .csv, .xlsx, .xlsm, or .xls.".format(suffix))
 
 
@@ -151,9 +157,9 @@ def read_bsl_table(path: str) -> pd.DataFrame:
     keep_cols = list(dict.fromkeys(rename_map.values()))
     bsl = bsl.rename(columns=rename_map)
     bsl = bsl[[col for col in keep_cols if col in bsl.columns]].copy()
-    bsl["Defect type"] = bsl["Defect type"].astype(str).str.strip()
+    bsl["Defect type"] = bsl["Defect type"].fillna("").astype(str).str.strip()
     bsl["BSL count"] = pd.to_numeric(bsl["BSL count"], errors="coerce")
-    bsl = bsl.dropna(subset=["Defect type", "BSL count"])
+    bsl = bsl.loc[bsl["Defect type"] != ""].dropna(subset=["BSL count"])
     if bsl.empty:
         raise ValueError("BSL file has no valid BSL rows.")
     return bsl
@@ -336,6 +342,13 @@ def filter_by_recent_scan_time(df: pd.DataFrame, data_window: str = DATA_WINDOW_
     if window == DATA_WINDOW_ALL:
         return df.copy()
     parsed = pd.to_datetime(df["Scan_Time_Parsed"] if "Scan_Time_Parsed" in df.columns else df["Scan_Time"], errors="coerce")
+    invalid_count = int(parsed.isna().sum())
+    if invalid_count:
+        raise ValueError(
+            "{} row(s) have an invalid Scan_Time. Recent-window filtering stopped to avoid silently omitting data.".format(
+                invalid_count
+            )
+        )
     valid = df.loc[parsed.notna()].copy()
     if valid.empty:
         raise ValueError("Scan_Time cannot be parsed for recent data filtering.")

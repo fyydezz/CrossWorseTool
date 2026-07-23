@@ -15,6 +15,15 @@ The scrollable left panel is divided into `Data Source`, `View`, and `Data Prepa
 
 `Box chart > Label size` controls the Count/Median/Mean annotation font. Keep it at `0` for density-based automatic sizing, or enter a positive point size for a fixed font.
 
+### Data completeness and trend spacing
+
+- The upper/lower 5% trim is used only by `Recent Trimmed BSL`. It returns one BSL value and does not remove rows from worse-tool statistics or chart data.
+- Trend preparation no longer averages rows that share the same Tool and Scan Time. Every valid input row becomes one plotted point after the explicitly selected time-window and outlier settings are applied.
+- `Trend all groups equal spacing` sorts each Tool by Scan Time, then plots its observations at `1, 2, 3, ...`. Irregular real-time gaps therefore do not distort the horizontal spacing.
+- A recent-window or Trend operation stops with an explicit error if Scan Time is invalid; rows are not silently discarded.
+- Empty Chamber or Equipment IDs remain visible as `(Missing Chamber)` or `(Missing Equipment ID)`.
+- CSV/Excel loading preserves identifiers such as `NA` and `N/A` instead of converting them to missing values.
+
 ---
 
 本工具用于把某一扫描站点得到的 wafer defect count 数据，Cross 到不同 Process Stage 和 Equipment/Chamber，筛选 worse tool，并通过 UI 查看 Box chart 和 Trend chart。
