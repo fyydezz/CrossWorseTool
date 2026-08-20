@@ -150,10 +150,10 @@ python defect_worse_ui.py
 
 图表类型：
 
-- `Box chart by selected group`：按中位数从高到低排列；中位数相同时按均值从高到低排列。group 数很多时自动使用 `T1/T2/...` 编号并显示映射；图上保留 raw data，并根据 Box 密集程度自适应显示 `N`、`Median`、`Mean` 字号。
-- `Trend overlay equal point spacing`：每个 Tool 内先按时间排序，再以连续点序号叠加；相邻点 X 轴距离固定为 1。
-- `Trend all tools equal point spacing`：所有选定 Tool 在同一坐标系比较，同样使用连续点序号，不使用真实时间差作为 X 轴距离。
-- `Sequential trend by selected group`：第一个 group 按时间排序画完后接第二个 group，再接第三个 group；所有 group 共用同一个 Y 轴，方便比较。
+- `Box chart by selected group`：按中位数从高到低排列；中位数相同时按均值从高到低排列。绘图区保留完整 raw data；Box key、Tool 名称以及可选的 `N`、`Median`、`Mean` 统一放在独立右侧信息栏。Tool 多时信息栏自动分栏、缩小字号，X 轴也会抽样编号，避免文字覆盖 Box、高点或相邻标签。
+- `Trend overlay equal point spacing`：按用户选择的时间列排序，将每个唯一时间映射为等距分类坐标；X 轴显示抽样后的真实时间，而不是无信息的点序号。
+- `Trend all tools equal point spacing`：所有选定 Tool 在同一坐标系比较，使用相同的等距时间分类轴并显示真实时间。Tool 图例位于绘图区右侧，不会覆盖曲线。
+- `Sequential trend by selected group`：第一个 group 按时间排序画完后紧接第二个 group，再接第三个 group；相邻数据点距离固定为 1，X 轴显示真实时间，Tool 名称移至右侧栏，所有 group 共用同一个 Y 轴。
 
 Chart style 支持：
 

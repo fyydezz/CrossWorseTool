@@ -110,10 +110,69 @@ def prepare_trend_data(df: pd.DataFrame, defect: str, time_col: str) -> pd.DataF
 
 def add_equal_spacing_index(trend: pd.DataFrame) -> pd.DataFrame:
     spaced = trend.copy()
-    spaced["Observation_Index"] = (
-        spaced.groupby("Chart_Group", sort=False, dropna=False).cumcount() + 1
+    ordered_times = (
+        spaced[["Selected_Time"]]
+        .drop_duplicates()
+        .sort_values("Selected_Time", kind="mergesort")
+        ["Selected_Time"]
+        .tolist()
     )
+    time_positions = {timestamp: index for index, timestamp in enumerate(ordered_times, start=1)}
+    spaced["Observation_Index"] = spaced["Selected_Time"].map(time_positions).astype(int)
     return spaced
+
+
+def sample_tick_labels(
+    positions: Sequence[int],
+    labels: Sequence[str],
+    max_ticks: int = 12,
+) -> Tuple[List[int], List[str]]:
+    if len(positions) != len(labels):
+        raise ValueError("Tick positions and labels must have the same length.")
+    if len(positions) == 0:
+        return [], []
+    limit = max(2, int(max_ticks))
+    if len(positions) <= limit:
+        return list(positions), list(labels)
+
+    last_index = len(positions) - 1
+    selected_indexes = sorted(
+        {
+            int(round(step * last_index / float(limit - 1)))
+            for step in range(limit)
+        }
+    )
+    return (
+        [int(positions[index]) for index in selected_indexes],
+        [str(labels[index]) for index in selected_indexes],
+    )
+
+
+def build_equal_spacing_time_ticks(
+    spaced_trend: pd.DataFrame,
+    max_ticks: int = 12,
+) -> Tuple[List[int], List[str]]:
+    timeline = (
+        spaced_trend[["Observation_Index", "Selected_Time"]]
+        .drop_duplicates(subset=["Observation_Index"])
+        .sort_values("Observation_Index", kind="mergesort")
+    )
+    timestamps = [pd.Timestamp(value) for value in timeline["Selected_Time"]]
+    show_clock = any(
+        timestamp.hour or timestamp.minute or timestamp.second or timestamp.microsecond
+        for timestamp in timestamps
+    )
+    time_format = "%Y-%m-%d\n%H:%M:%S" if any(
+        timestamp.second or timestamp.microsecond for timestamp in timestamps
+    ) else "%Y-%m-%d\n%H:%M"
+    if not show_clock:
+        time_format = "%Y-%m-%d"
+    labels = [timestamp.strftime(time_format) for timestamp in timestamps]
+    return sample_tick_labels(
+        timeline["Observation_Index"].astype(int).tolist(),
+        labels,
+        max_ticks=max_ticks,
+    )
 
 
 class DefectWorseToolApp(tk.Tk):
@@ -1422,10 +1481,191 @@ class DefectWorseToolApp(tk.Tk):
         override = self.artist_style_overrides.get((kind, str(key)), {})
         return override.get("color", color), float(override.get("linewidth", linewidth))
 
-    def _draw_box(self, defect: str, stage: str, df: pd.DataFrame) -> None:
+    @staticmethod
+    def _tool_sidebar_columns(group_count: int) -> int:
+        return max(1, (int(group_count) + 17) // 18)
+
+    def _new_chart_axes(self, group_count: int, bottom: float = 0.16):
+        sidebar_columns = self._tool_sidebar_columns(group_count)
+        sidebar_fraction = min(0.50, 0.23 + 0.15 * (sidebar_columns - 1))
         self.fig.clear()
+        grid = self.fig.add_gridspec(
+            1,
+            2,
+            width_ratios=[1.0 - sidebar_fraction, sidebar_fraction],
+            wspace=0.08,
+            left=0.08,
+            right=0.985,
+            bottom=bottom,
+            top=0.90,
+        )
+        ax = self.fig.add_subplot(grid[0, 0])
+        sidebar_ax = self.fig.add_subplot(grid[0, 1])
+        sidebar_ax.set_axis_off()
+        self.ax = ax
+        return ax, sidebar_ax
+
+    def _draw_tool_sidebar(self, sidebar_ax, ax, group_count: int) -> None:
+        handles, labels = ax.get_legend_handles_labels()
+        columns = self._tool_sidebar_columns(group_count)
+        font_size = 8.0 if group_count <= 18 else 7.0 if group_count <= 36 else 6.2
+        sidebar_ax.legend(
+            handles,
+            labels,
+            title="TOOLS",
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            borderaxespad=0.0,
+            frameon=False,
+            fontsize=font_size,
+            title_fontsize=max(7.0, font_size),
+            ncol=columns,
+            columnspacing=0.8,
+            handlelength=1.8,
+            handletextpad=0.45,
+            labelspacing=0.55,
+        )
+
+    @staticmethod
+    def _shorten_sidebar_label(value: str, max_chars: int) -> str:
+        label = str(value)
+        if len(label) <= max_chars:
+            return label
+        return label[: max(1, max_chars - 1)] + "..."
+
+    def _draw_box_sidebar(
+        self,
+        sidebar_ax,
+        full_labels: Sequence[str],
+        counts: Sequence[int],
+        medians: Sequence[float],
+        means: Sequence[float],
+        stats_font_size: float,
+    ) -> None:
+        key_handles = [
+            Line2D([0], [0], color="#B40426", linewidth=6, label="Higher median"),
+            Line2D([0], [0], color="#3B4CC0", linewidth=6, label="Lower median"),
+            Line2D([0], [0], color="#C23B22", linewidth=2.2, label="Median"),
+        ]
+        if self.show_box_mean.get():
+            key_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    marker="D",
+                    color="none",
+                    markerfacecolor="#F2B134",
+                    markeredgecolor="#263238",
+                    label="Mean",
+                )
+            )
+        key_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="o",
+                color="none",
+                markerfacecolor="#7B8794",
+                markeredgecolor="#FFFFFF",
+                label="Raw data",
+            )
+        )
+        key_legend = sidebar_ax.legend(
+            handles=key_handles,
+            title="BOX KEY",
+            loc="upper left",
+            bbox_to_anchor=(0.0, 1.0),
+            borderaxespad=0.0,
+            frameon=False,
+            fontsize=7.0,
+            title_fontsize=7.5,
+            ncol=2,
+            columnspacing=0.8,
+            handlelength=1.8,
+            handletextpad=0.4,
+            labelspacing=0.45,
+        )
+        sidebar_ax.add_artist(key_legend)
+
+        sidebar_ax.text(
+            0.0,
+            0.78,
+            "TOOL SUMMARY",
+            transform=sidebar_ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7.5,
+            fontweight="bold",
+            color="#263442",
+        )
+        group_count = len(full_labels)
+        columns = self._tool_sidebar_columns(group_count)
+        rows = max(1, (group_count + columns - 1) // columns)
+        available_height = 0.72
+        axes_height_pixels = (
+            float(self.fig.get_figheight())
+            * float(self.fig.dpi)
+            * float(sidebar_ax.get_position().height)
+        )
+        row_height_pixels = axes_height_pixels * available_height / float(rows)
+        line_count = 2 if any(
+            (self.show_box_count.get(), self.show_box_median.get(), self.show_box_mean.get())
+        ) else 1
+        fit_factor = 0.34 if line_count == 2 else 0.62
+        fit_font_size = row_height_pixels * 72.0 / float(self.fig.dpi) * fit_factor
+        max_font_size = 8.0 if columns == 1 else 7.0 if columns == 2 else 5.8
+        font_size = max(5.0, min(float(stats_font_size), max_font_size, fit_font_size))
+        max_tool_chars = 28 if columns == 1 else 20 if columns == 2 else 14
+
+        for index, (tool, count, median, mean) in enumerate(
+            zip(full_labels, counts, medians, means)
+        ):
+            column = index // rows
+            row = index % rows
+            x = column / float(columns)
+            y = 0.73 - (row + 0.5) * available_height / float(rows)
+            stats = []
+            if self.show_box_count.get():
+                stats.append("N{}".format(count))
+            if self.show_box_median.get():
+                stats.append("Md{:.2f}".format(median))
+            if self.show_box_mean.get():
+                stats.append("Av{:.2f}".format(mean))
+            tool_label = self._shorten_sidebar_label(tool, max_tool_chars)
+            line = "T{} {}".format(index + 1, tool_label)
+            if stats:
+                line += "\n   " + " ".join(stats)
+            sidebar_ax.text(
+                x,
+                y,
+                line,
+                transform=sidebar_ax.transAxes,
+                ha="left",
+                va="center",
+                fontsize=font_size,
+                family="monospace",
+                color="#263442",
+                clip_on=True,
+            )
+
+    @staticmethod
+    def _apply_equal_time_ticks(ax, spaced_trend: pd.DataFrame, time_col: str) -> None:
+        plot_width_pixels = (
+            float(ax.figure.get_figwidth())
+            * float(ax.figure.dpi)
+            * float(ax.get_position().width)
+        )
+        max_ticks = max(5, min(12, int(plot_width_pixels / 85.0)))
+        tick_positions, tick_labels = build_equal_spacing_time_ticks(
+            spaced_trend,
+            max_ticks=max_ticks,
+        )
+        ax.set_xticks(tick_positions)
+        ax.set_xticklabels(tick_labels, rotation=38, ha="right", fontsize=7.5)
+        ax.set_xlabel("{} (chronological, equal spacing)".format(time_col))
+
+    def _draw_box(self, defect: str, stage: str, df: pd.DataFrame) -> None:
         self._reset_chart_artists()
-        ax = self.fig.add_subplot(111)
         grouped_parts = []
         for tool, part in df.groupby("Chart_Group"):
             values = pd.to_numeric(part[defect], errors="coerce").dropna()
@@ -1444,8 +1684,9 @@ class DefectWorseToolApp(tk.Tk):
         if not grouped_parts:
             messagebox.showerror("Plot failed", "No numeric values to plot.")
             return
+        ax, sidebar_ax = self._new_chart_axes(len(grouped_parts))
         full_labels = [item[1] for item in grouped_parts]
-        pixels_per_box = self._box_pixels_per_group(len(grouped_parts))
+        pixels_per_box = self._box_pixels_per_group(len(grouped_parts), ax=ax)
         compact_labels = len(grouped_parts) > 12 or pixels_per_box < 80
         stats_font_size = self._box_stats_font_size(pixels_per_box)
         labels = ["T{}".format(index) for index in range(1, len(grouped_parts) + 1)] if compact_labels else full_labels
@@ -1502,11 +1743,6 @@ class DefectWorseToolApp(tk.Tk):
                 box_color,
                 outline_width,
             )
-        value_span = max(max(group) for group in groups) - min(min(group) for group in groups)
-        annotation_offset = max(value_span * 0.025, 0.05)
-        show_any_stats = any(
-            (self.show_box_count.get(), self.show_box_median.get(), self.show_box_mean.get())
-        )
         for index, (values, point_color) in enumerate(zip(groups, rendered_box_colors), start=1):
             ax.scatter(
                 self._jitter_positions(index, len(values)),
@@ -1518,111 +1754,48 @@ class DefectWorseToolApp(tk.Tk):
                 alpha=0.55,
                 zorder=3,
             )
-            stats_lines: List[str] = []
-            if self.show_box_count.get():
-                stats_lines.append("N={}".format(counts[index - 1]))
-            if self.show_box_median.get():
-                stats_lines.append("Median={:.2f}".format(medians[index - 1]))
-            if self.show_box_mean.get():
-                stats_lines.append("Mean={:.2f}".format(means[index - 1]))
-            if stats_lines:
-                ax.text(
-                    index,
-                    max(values) + annotation_offset,
-                    "\n".join(stats_lines),
-                    ha="center",
-                    va="bottom",
-                    fontsize=stats_font_size,
-                    color="#37474F",
-                )
         ax.set_title("{} | {} | Box by {} (red high, blue low)".format(defect, stage, group_label))
         ax.set_xlabel("{} (median high to low)".format(group_label))
         ax.set_ylabel("Defect count")
-        ax.tick_params(axis="x", rotation=0 if compact_labels else 45)
+        if compact_labels and pixels_per_box < 12:
+            plot_width_pixels = pixels_per_box * len(labels)
+            max_ticks = max(8, int(plot_width_pixels / 24.0))
+            tick_positions, tick_labels = sample_tick_labels(
+                list(range(1, len(labels) + 1)),
+                labels,
+                max_ticks=max_ticks,
+            )
+            ax.set_xticks(tick_positions)
+            ax.set_xticklabels(tick_labels)
+        ax.tick_params(
+            axis="x",
+            rotation=90 if compact_labels and pixels_per_box < 18 else 0 if compact_labels else 45,
+            labelsize=6 if compact_labels and pixels_per_box < 18 else 8,
+        )
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7D4CC", linewidth=0.7, alpha=0.7)
         ax.set_axisbelow(True)
-        if show_any_stats:
-            ax.margins(y=0.20 if stats_font_size >= 10 else 0.16)
-        else:
-            ax.margins(y=0.08)
+        ax.margins(y=0.08)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        legend_handles = [
-                Line2D([0], [0], color="#B40426", linewidth=6, label="Higher median"),
-                Line2D([0], [0], color="#3B4CC0", linewidth=6, label="Lower median"),
-                Line2D([0], [0], color="#C23B22", linewidth=2.2, label="Median"),
-        ]
-        if self.show_box_mean.get():
-            legend_handles.append(Line2D(
-                    [0],
-                    [0],
-                    marker="D",
-                    color="none",
-                    markerfacecolor="#F2B134",
-                    markeredgecolor="#263238",
-                    label="Mean",
-                ))
-        legend_handles.append(Line2D(
-                    [0],
-                    [0],
-                    marker="o",
-                    color="none",
-                    markerfacecolor="#7B8794",
-                    markeredgecolor="#FFFFFF",
-                    label="Raw data",
-                ))
-        ax.legend(
-            handles=legend_handles,
-            loc="upper right",
-            frameon=False,
+        self._draw_box_sidebar(
+            sidebar_ax,
+            full_labels,
+            counts,
+            medians,
+            means,
+            stats_font_size,
         )
-        if compact_labels:
-            mapping_lines = []
-            for label, tool, count, median, mean in zip(labels, full_labels, counts, medians, means):
-                stats = []
-                if self.show_box_count.get():
-                    stats.append("n {}".format(count))
-                if self.show_box_median.get():
-                    stats.append("med {:.2f}".format(median))
-                if self.show_box_mean.get():
-                    stats.append("avg {:.2f}".format(mean))
-                mapping_lines.append("{} = {}{}".format(label, tool, " | " + " | ".join(stats) if stats else ""))
-            ax.text(
-                1.01,
-                1.0,
-                "\n".join(mapping_lines[:40]),
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=max(5.0, stats_font_size - 1),
-                color="#263442",
-                bbox={"boxstyle": "round,pad=0.35", "facecolor": "#FFFFFF", "edgecolor": "#D1D5DB", "alpha": 0.92},
-            )
-            if len(mapping_lines) > 40:
-                ax.text(
-                    1.01,
-                    0.02,
-                    "... {} more tools".format(len(mapping_lines) - 40),
-                    transform=ax.transAxes,
-                    ha="left",
-                    va="bottom",
-                    fontsize=7,
-                    color="#B45309",
-                )
         self._apply_y_limits(ax)
-        self.fig.tight_layout()
         self.canvas.draw()
         self.status.set("Box chart rendered. Click a box to edit it. Groups: {}".format(len(groups)))
 
     def _draw_trend(self, defect: str, stage: str, time_col: str, trend: pd.DataFrame) -> None:
-        self.fig.clear()
         self._reset_chart_artists()
-        ax = self.fig.add_subplot(111)
         spaced_trend = add_equal_spacing_index(trend)
         groups = self._ordered_trend_groups(spaced_trend)
+        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
         colors = self._colors(len(groups))
-        max_observations = 0
         total_points = 0
         for color, tool in zip(colors, groups):
             part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
@@ -1639,20 +1812,16 @@ class DefectWorseToolApp(tk.Tk):
                 label=label,
             )
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-            max_observations = max(max_observations, len(part))
             total_points += len(part)
         ax.set_title("{} | {} | Trend overlay (equal point spacing)".format(defect, stage))
-        ax.set_xlabel("Observation order within each Tool (sorted by {}; every point is 1 unit apart)".format(time_col))
+        self._apply_equal_time_ticks(ax, spaced_trend, time_col)
         ax.set_ylabel("Defect count")
-        ax.xaxis.set_major_locator(
-            MaxNLocator(nbins=min(12, max(1, max_observations)), integer=True)
-        )
-        if max_observations:
-            ax.set_xlim(0.5, max_observations + 0.5)
+        max_time_index = int(spaced_trend["Observation_Index"].max())
+        ax.set_xlim(0.5, max_time_index + 0.5)
         ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
-        ax.legend(loc="best", fontsize=8, frameon=True, framealpha=0.88)
+        ax.set_axisbelow(True)
+        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
         self._apply_y_limits(ax)
-        self.fig.tight_layout()
         self.canvas.draw()
         self.status.set(
             "Equal-spacing trend rendered with {} point(s). Click a line to edit it.".format(
@@ -1667,13 +1836,11 @@ class DefectWorseToolApp(tk.Tk):
         time_col: str,
         trend: pd.DataFrame,
     ) -> None:
-        self.fig.clear()
         self._reset_chart_artists()
-        ax = self.fig.add_subplot(111)
         spaced_trend = add_equal_spacing_index(trend)
         groups = self._ordered_trend_groups(spaced_trend)
+        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
         colors = self._colors(len(groups))
-        max_observations = 0
         total_points = 0
         for color, tool in zip(colors, groups):
             part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
@@ -1690,26 +1857,17 @@ class DefectWorseToolApp(tk.Tk):
                 label=label,
             )
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-            max_observations = max(max_observations, len(part))
             total_points += len(part)
         ax.set_title("{} | {} | All groups trend (equal point spacing)".format(defect, stage))
-        ax.set_xlabel(
-            "Observation order within each Tool (sorted by {}; every point is 1 unit apart)".format(
-                time_col
-            )
-        )
+        self._apply_equal_time_ticks(ax, spaced_trend, time_col)
         ax.set_ylabel("Defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
-        ax.xaxis.set_major_locator(
-            MaxNLocator(nbins=min(12, max(1, max_observations)), integer=True)
-        )
-        if max_observations:
-            ax.set_xlim(0.5, max_observations + 0.5)
+        max_time_index = int(spaced_trend["Observation_Index"].max())
+        ax.set_xlim(0.5, max_time_index + 0.5)
         ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.set_axisbelow(True)
-        ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=True, framealpha=0.9)
+        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
         self._apply_y_limits(ax)
-        self.fig.tight_layout()
         self.canvas.draw()
         self.status.set(
             "All-group equal-spacing trend rendered with {} point(s). Groups: {}.".format(
@@ -1725,16 +1883,14 @@ class DefectWorseToolApp(tk.Tk):
         time_col: str,
         trend: pd.DataFrame,
     ) -> None:
-        self.fig.clear()
         self._reset_chart_artists()
-        ax = self.fig.add_subplot(111)
         groups = self._ordered_trend_groups(trend)
+        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
         colors = self._colors(len(groups))
         x_positions: List[int] = []
         x_labels: List[str] = []
         boundaries: List[float] = []
-        tool_labels: List[Tuple[float, str, object]] = []
-        current_x = 0
+        current_x = 1
 
         for index, (color, tool) in enumerate(zip(colors, groups)):
             part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time").reset_index(drop=True)
@@ -1755,11 +1911,8 @@ class DefectWorseToolApp(tk.Tk):
             )
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
             x_positions.extend(xs)
-            x_labels.extend(part["Selected_Time"].dt.strftime("%m-%d %H:%M").tolist())
-            tool_labels.append(
-                (sum(xs) / float(len(xs)), label, line_color)
-            )
-            current_x += len(part) + 1
+            x_labels.extend(part["Selected_Time"].dt.strftime("%Y-%m-%d\n%H:%M").tolist())
+            current_x += len(part)
             if index < len(groups) - 1:
                 boundaries.append(current_x - 0.5)
 
@@ -1770,41 +1923,28 @@ class DefectWorseToolApp(tk.Tk):
         for boundary in boundaries:
             ax.axvline(boundary, linestyle="--", linewidth=1.0, color="#6B7280", alpha=0.45)
 
-        configured_y_min, configured_y_max = self._get_y_limits()
         self._apply_y_limits(ax)
-        y_min, y_max = ax.get_ylim()
-        y_span = y_max - y_min if y_max > y_min else 1.0
-        if configured_y_max is None:
-            ax.set_ylim(y_min, y_max + y_span * 0.16)
-            y_min, y_max = ax.get_ylim()
-            y_span = y_max - y_min if y_max > y_min else 1.0
-        for x_mid, label, color in tool_labels:
-            ax.text(
-                x_mid,
-                y_max + y_span * 0.04,
-                label,
-                ha="center",
-                va="bottom",
-                fontsize=8,
-                fontweight="bold",
-                color=color,
-                rotation=0,
-            )
-
-        max_ticks = 70
-        tick_step = max(1, int(len(x_positions) / max_ticks) + (1 if len(x_positions) % max_ticks else 0))
-        shown_positions = x_positions[::tick_step]
-        shown_labels = x_labels[::tick_step]
+        plot_width_pixels = (
+            float(self.fig.get_figwidth())
+            * float(self.fig.dpi)
+            * float(ax.get_position().width)
+        )
+        max_ticks = max(5, min(12, int(plot_width_pixels / 85.0)))
+        shown_positions, shown_labels = sample_tick_labels(
+            x_positions,
+            x_labels,
+            max_ticks=max_ticks,
+        )
         ax.set_xticks(shown_positions)
-        ax.set_xticklabels(shown_labels, rotation=55, ha="right", fontsize=8)
+        ax.set_xticklabels(shown_labels, rotation=38, ha="right", fontsize=7.5)
+        ax.set_xlim(min(x_positions) - 0.5, max(x_positions) + 0.5)
         ax.set_title("{} | {} | Sequential trend by selected group".format(defect, stage))
-        ax.set_xlabel("{} sorted within each group, groups appended left to right".format(time_col))
+        ax.set_xlabel("{} sorted within each Tool; every point is 1 unit apart".format(time_col))
         ax.set_ylabel("Defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.grid(True, axis="y", color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.set_axisbelow(True)
-        ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=True, framealpha=0.9)
-        self.fig.tight_layout()
+        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
         self.canvas.draw()
         self.status.set("Sequential trend rendered. Click a line to edit it. Groups: {}".format(len(groups)))
 
@@ -1816,11 +1956,12 @@ class DefectWorseToolApp(tk.Tk):
         )
         return order["Chart_Group"].astype(str).tolist()
 
-    def _box_pixels_per_group(self, group_count: int) -> float:
+    def _box_pixels_per_group(self, group_count: int, ax=None) -> float:
         if group_count <= 0:
             return 0.0
         figure_width = float(self.fig.get_figwidth()) * float(self.fig.dpi)
-        return figure_width / float(group_count)
+        axes_fraction = float(ax.get_position().width) if ax is not None else 1.0
+        return figure_width * axes_fraction / float(group_count)
 
     @staticmethod
     def _box_rank_colors(group_count: int) -> List[object]:

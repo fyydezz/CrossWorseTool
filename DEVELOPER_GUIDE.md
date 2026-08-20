@@ -283,12 +283,16 @@ Button callback
 
 图表方法：
 
-- `_draw_box()`：Box chart 按 median、mean 降序排列；根据每组可用像素宽度自适应统计字号、箱宽和 raw-data 散点大小。
+- `_draw_box()`：Box chart 按 median、mean 降序排列；根据每组可用像素宽度自适应箱宽、raw-data 散点和 X 轴刻度。统计信息不再写在数据区域，而是交给 `_draw_box_sidebar()` 在独立右侧栏中分栏显示。
 - `_filter_chart_group_mode()`：创建独立 `Chart_Group`。`By Chamber` 直接使用 `Chamber_ID`，`By Equipment ID` 直接使用 `Equipment_ID`，不改变核心 Worse Tool 的 `Tool_Group`。
 - `_filter_chart_process()`：直接复用核心层的 `apply_special_process_rules()` 和 `apply_process_aggregation()`，保证 special process 的 Chart 与 Worse Tool 使用同一批数据。
-- `_draw_trend()`：所有 Tool 同坐标系的等距点序号 overlay。
-- `_draw_trend_all_chambers()`：所有 Tool 同坐标系的等距点序号对比。两者均只用时间排序，不用时间差确定 X 坐标。
-- `_draw_trend_sequence_by_tool()`：按 tool 分段拼接的 trend。每个 tool 内按时间排序，tool 之间加虚线分隔，Y 轴共用。
+- `add_equal_spacing_index()`：把排序后的唯一 `Selected_Time` 映射为连续整数分类坐标；真实时间间隔不会改变点位距离，相同时间仍对齐到同一位置。
+- `build_equal_spacing_time_ticks()` / `sample_tick_labels()`：生成真实时间刻度，并按绘图区宽度抽样，始终保留首尾时间。
+- `_new_chart_axes()`：创建互不覆盖的主绘图区与右侧信息栏，并根据 Tool 数量扩大信息栏。
+- `_draw_tool_sidebar()`：在独立区域自适应分栏显示 Trend Tool 名称，避免图例压住曲线或顶部 Tool 名称相撞。
+- `_draw_box_sidebar()`：在独立区域显示 Box key 和 Tool 的 `N/Median/Mean` 汇总。
+- `_draw_trend()` / `_draw_trend_all_chambers()`：所有 Tool 使用同一个等距时间分类轴；X 轴刻度仍显示用户选中的真实时间。
+- `_draw_trend_sequence_by_tool()`：按 Tool 分段连续拼接的 Trend。每个 Tool 内按时间排序，Tool 之间加虚线分隔，相邻点距离恒为 1，名称放在右侧栏，Y 轴共用。
 - `_ordered_trend_groups()`：tool/chamber 排序。
 - `_colors()`：颜色方案。
 - `_jitter_positions()`：Box chart 散点抖动。
