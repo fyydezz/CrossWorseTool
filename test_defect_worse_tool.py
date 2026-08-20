@@ -7,9 +7,13 @@ from tempfile import TemporaryDirectory
 import pandas as pd
 
 from defect_worse_tool import (
+    BSL_SOURCE_CALCULATED_MEAN,
+    BSL_SOURCE_FILE,
     SPECIAL_STAGE_ID,
     add_grouping_columns,
     build_bsl_lookup,
+    build_worse_tool_result,
+    calculate_mean_bsl,
     calculate_recent_trimmed_bsl,
     filter_by_recent_scan_time,
     filter_outliers_for_defect,
@@ -87,6 +91,7 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         row = result.iloc[0]
         self.assertEqual(row["Stage_ID"], SPECIAL_STAGE_ID)
+        self.assertEqual(row["BSL Source"], BSL_SOURCE_FILE)
 
         filtered = filter_outliers_for_defect(raw, "D1")
         selected = self.app._format_step_only_option("P1")
@@ -259,6 +264,72 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
 
         self.assertEqual(loaded.loc[0, "Equipment_ID"], "NA")
         self.assertEqual(loaded.loc[0, "Chamber_ID"], "N/A")
+
+    def test_calculated_mean_can_be_used_as_bsl_without_bsl_file(self) -> None:
+        rows = []
+        for equipment, value in (("KP_HIGH", 10.0), ("KP_LOW", 0.0)):
+            for wafer in range(1, 6):
+                rows.append(
+                    {
+                        "LOT_ID": "L_{}".format(equipment),
+                        "WAFER_NO": wafer,
+                        "SCAN_TIME": "2026-08-{:02d}".format(wafer),
+                        "D1": value,
+                        "STAGE": "S1",
+                        "STEP_ID": "P1",
+                        "EQUIPMENT_ID": equipment,
+                        "CHAMBER": "C1",
+                    }
+                )
+        for wafer in range(1, 6):
+            rows.append(
+                {
+                    "LOT_ID": "L_OLD",
+                    "WAFER_NO": wafer,
+                    "SCAN_TIME": "2026-06-{:02d}".format(wafer),
+                    "D1": 100.0,
+                    "STAGE": "S1",
+                    "STEP_ID": "P1",
+                    "EQUIPMENT_ID": "KP_OLD",
+                    "CHAMBER": "C1",
+                }
+            )
+
+        with TemporaryDirectory() as temp_dir:
+            input_path = Path(temp_dir) / "input.csv"
+            pd.DataFrame(rows).to_csv(input_path, index=False)
+            result = build_worse_tool_result(
+                input_path=str(input_path),
+                bsl_source=BSL_SOURCE_CALCULATED_MEAN,
+                bsl_multiplier=1.5,
+                min_wafers=5,
+                outlier_sigma=100.0,
+                data_window="14d",
+            )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result.iloc[0]["Equipment ID"], "KP_HIGH")
+        self.assertAlmostEqual(result.iloc[0]["BSL count"], 5.0)
+        self.assertEqual(result.iloc[0]["BSL Source"], BSL_SOURCE_CALCULATED_MEAN)
+        self.assertAlmostEqual(result.iloc[0]["Recent Trimmed BSL"], 5.0)
+
+    def test_calculated_mean_bsl_uses_selected_outlier_handling(self) -> None:
+        raw = pd.DataFrame({"D1": [0.0, 0.0, 0.0, 100.0]})
+        expected_cap = handle_outliers_for_defect(
+            raw,
+            "D1",
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_CAP,
+        )["D1"].mean()
+
+        calculated = calculate_mean_bsl(
+            raw,
+            "D1",
+            outlier_sigma=1.0,
+            outlier_handling=OUTLIER_HANDLING_CAP,
+        )
+
+        self.assertAlmostEqual(calculated, expected_cap)
 
 
 if __name__ == "__main__":

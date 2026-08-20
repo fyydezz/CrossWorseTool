@@ -19,7 +19,7 @@ The scrollable left panel is divided into `Data Source`, `View`, and `Data Prepa
 
 - The upper/lower 5% trim is used only by `Recent Trimmed BSL`. It returns one BSL value and does not remove rows from worse-tool statistics or chart data.
 - Trend preparation no longer averages rows that share the same Tool and Scan Time. Every valid input row becomes one plotted point after the explicitly selected time-window and outlier settings are applied.
-- `Trend all groups equal spacing` sorts each Tool by Scan Time, then plots its observations at `1, 2, 3, ...`. Irregular real-time gaps therefore do not distort the horizontal spacing.
+- Both overlay Trend modes sort each Tool by Scan Time, then plot its observations at `1, 2, 3, ...`. Every adjacent point is exactly one X-axis unit apart; real-time gaps never affect horizontal spacing.
 - A recent-window or Trend operation stops with an explicit error if Scan Time is invalid; rows are not silently discarded.
 - Empty Chamber or Equipment IDs remain visible as `(Missing Chamber)` or `(Missing Equipment ID)`.
 - CSV/Excel loading preserves identifiers such as `NA` and `N/A` instead of converting them to missing values.
@@ -78,6 +78,13 @@ BSL count
 
 如果 BSL 文件同时包含 `Stage_ID` 和 `Step_ID`，程序会优先使用 stage-specific BSL；找不到时回退到 defect 全局 BSL。
 
+`BSL source` 提供两种基准：
+
+- `Input BSL file`：使用用户导入的 BSL 文件，保持原有 stage-specific/global BSL 逻辑。
+- `Calculated defect mean (after outlier handling)`：BSL 文件可留空。程序在当前 `Analysis data window` 内，先按所选 3σ outlier 方式处理该 Defect 的全部 Tool 数据，再取整体 Mean 作为该 Defect 的全局 BSL。
+
+计算 Mean BSL 与 `Recent Trimmed BSL` 是两个独立值。前者可参与 worse-tool 阈值判定；后者仍只用于输出观察，并只在自身计算时过滤上下各 5%。
+
 ## 4. 核心计算规则
 
 1. `KP`、`KD`、`KW` 开头的 `Equipment_ID` 按整机聚合。
@@ -87,7 +94,7 @@ BSL count
 5. `Analysis data window` 可选择全部数据、近两周或近一周。窗口按输入数据中最大的 `Scan_Time` 往前回推，不按电脑当天日期计算。
 6. 每个 defect 单独过滤高端 outlier，默认过滤 `mean + 3 * std` 以上的点。
 7. 每个 process/tool 组内 unique wafer 数小于 `Minimum wafers` 时过滤掉，默认 5。
-8. 组内平均值或中位数大于等于 `BSL count * BSL multiplier` 时输出，默认倍数 1.5。
+8. 根据 `BSL source` 使用输入文件 BSL 或计算 Mean BSL；组内平均值或中位数大于等于 `BSL count * BSL multiplier` 时输出，默认倍数 1.5。
 9. 输出新增 `Recent Trimmed BSL`，基于当前分析窗口内该 defect 的全部数据，去掉上下各 5% 后取均值，用于观察近期 BSL 水平。
 
 ## 5. 特殊 Process 规则
@@ -118,7 +125,7 @@ python defect_worse_ui.py
 ### Run Worse Tool 页
 
 1. 选择 raw defect data。
-2. 选择 BSL 文件。
+2. 选择 `BSL source`。使用 `Input BSL file` 时选择 BSL 文件；使用计算 Mean 时 BSL 文件可留空。
 3. 指定输出 Excel 路径。
 4. 按需设置 input/output sheet、BSL multiplier、Minimum wafers、Outlier sigma 和 Outlier handling。
 5. `Process aggregation` 默认 `Stage_ID + Step_ID`；如需跨 stage 按相同 recipe/tool 对比，选择 `Step_ID only`。
@@ -144,8 +151,8 @@ python defect_worse_ui.py
 图表类型：
 
 - `Box chart by selected group`：按中位数从高到低排列；中位数相同时按均值从高到低排列。group 数很多时自动使用 `T1/T2/...` 编号并显示映射；图上保留 raw data，并根据 Box 密集程度自适应显示 `N`、`Median`、`Mean` 字号。
-- `Trend overlay by time`：所有 tool/chamber 按真实时间叠加到同一坐标系。
-- `Trend all groups same axis`：所有选定类型的 group 放在同一个坐标系对比。
+- `Trend overlay equal point spacing`：每个 Tool 内先按时间排序，再以连续点序号叠加；相邻点 X 轴距离固定为 1。
+- `Trend all tools equal point spacing`：所有选定 Tool 在同一坐标系比较，同样使用连续点序号，不使用真实时间差作为 X 轴距离。
 - `Sequential trend by selected group`：第一个 group 按时间排序画完后接第二个 group，再接第三个 group；所有 group 共用同一个 Y 轴，方便比较。
 
 Chart style 支持：
@@ -175,6 +182,18 @@ python defect_worse_tool.py `
   --write-mode replace
 ```
 
+不使用 BSL 文件、改用计算 Mean BSL：
+
+```powershell
+python defect_worse_tool.py `
+  --input demo_defect_data.csv `
+  --bsl-source calculated_mean `
+  --output worse_tool_result.xlsx `
+  --data-window 14d `
+  --outlier-handling cap `
+  --write-mode replace
+```
+
 `--process-aggregation stage_step` 是默认模式，按 `Stage_ID + Step_ID` 计算；`--process-aggregation step` 会忽略 Stage，只按 Step_ID 计算和输出。
 
 `--data-window all` 使用全部数据；`--data-window 14d` 使用最新 Scan_Time 往前 14 天；`--data-window 7d` 使用最新 Scan_Time 往前 7 天。
@@ -192,6 +211,7 @@ python defect_worse_tool.py `
 ```text
 Defect type
 BSL count
+BSL Source
 Stage_ID
 Step_ID
 Equipment ID

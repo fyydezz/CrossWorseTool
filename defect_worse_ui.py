@@ -36,6 +36,9 @@ from defect_worse_tool import (
     DATA_WINDOW_7D,
     OUTLIER_HANDLING_CAP,
     OUTLIER_HANDLING_FILTER,
+    BSL_SOURCE_CALCULATED_MEAN,
+    BSL_SOURCE_FILE,
+    normalize_bsl_source,
     read_table,
     filter_by_recent_scan_time,
     validate_required_columns,
@@ -64,12 +67,16 @@ OUTLIER_HANDLING_LABELS = {
     "Remove values above mean + N*sigma": OUTLIER_HANDLING_FILTER,
     "Cap values at mean + N*sigma": OUTLIER_HANDLING_CAP,
 }
+BSL_SOURCE_LABELS = {
+    "Input BSL file": BSL_SOURCE_FILE,
+    "Calculated defect mean (after outlier handling)": BSL_SOURCE_CALCULATED_MEAN,
+}
 CHART_GROUP_MODE_CHAMBER = "By Chamber"
 CHART_GROUP_MODE_EQUIPMENT = "By Equipment ID"
 CHART_GROUP_MODES = (CHART_GROUP_MODE_CHAMBER, CHART_GROUP_MODE_EQUIPMENT)
 CHART_TYPE_BOX = "Box chart by selected group"
-CHART_TYPE_TREND = "Trend overlay by time"
-CHART_TYPE_ALL_GROUPS = "Trend all groups equal spacing"
+CHART_TYPE_TREND = "Trend overlay equal point spacing"
+CHART_TYPE_ALL_GROUPS = "Trend all tools equal point spacing"
 CHART_TYPE_SEQUENCE = "Sequential trend by selected group"
 
 
@@ -119,6 +126,7 @@ class DefectWorseToolApp(tk.Tk):
         self.input_path = tk.StringVar()
         self.input_sheet = tk.StringVar()
         self.bsl_path = tk.StringVar()
+        self.bsl_source = tk.StringVar(value="Input BSL file")
         self.output_path = tk.StringVar()
         self.output_sheet = tk.StringVar(value=DEFAULT_SHEET_NAME)
         self.ppt_output_path = tk.StringVar()
@@ -153,7 +161,7 @@ class DefectWorseToolApp(tk.Tk):
         self.y_min = tk.StringVar()
         self.y_max = tk.StringVar()
         self.selected_chart_item = tk.StringVar(value="No chart item selected")
-        self.status = tk.StringVar(value="Select raw data and a BSL file to start.")
+        self.status = tk.StringVar(value="Select raw data and configure the BSL source to start.")
 
         self.raw_df: Optional[pd.DataFrame] = None
         self.last_result: Optional[pd.DataFrame] = None
@@ -169,6 +177,7 @@ class DefectWorseToolApp(tk.Tk):
 
         self._configure_style()
         self._build_ui()
+        self.bsl_source.trace_add("write", lambda *_: self._sync_bsl_source_state())
         self.special_step_rules.trace_add("write", lambda *_: self._refresh_process_stage_options())
         self.process_aggregation.trace_add("write", lambda *_: self._refresh_process_stage_options())
         self.after(150, self._poll_results)
@@ -253,7 +262,9 @@ class DefectWorseToolApp(tk.Tk):
         controls.columnconfigure(4, weight=1)
 
         self._file_row(controls, 0, "Raw defect data", self.input_path, self.browse_raw)
-        self._file_row(controls, 1, "BSL file", self.bsl_path, self.browse_bsl)
+        self.bsl_entry, self.bsl_browse_button = self._file_row(
+            controls, 1, "BSL file", self.bsl_path, self.browse_bsl
+        )
         self._file_row(controls, 2, "Output Excel", self.output_path, self.browse_output)
 
         ttk.Label(controls, text="Input sheet", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 2))
@@ -323,6 +334,15 @@ class DefectWorseToolApp(tk.Tk):
             state="readonly",
             width=30,
         ).pack(anchor="w", fill="x", pady=(2, 0))
+        ttk.Label(mode_frame, text="BSL source", style="Card.TLabel").pack(anchor="w", pady=(6, 0))
+        ttk.Combobox(
+            mode_frame,
+            textvariable=self.bsl_source,
+            values=list(BSL_SOURCE_LABELS.keys()),
+            state="readonly",
+            width=30,
+        ).pack(anchor="w", fill="x", pady=(2, 0))
+        self._sync_bsl_source_state()
 
         ttk.Label(
             controls,
@@ -381,6 +401,7 @@ class DefectWorseToolApp(tk.Tk):
         columns = (
             "Defect type",
             "BSL count",
+            "BSL Source",
             "Stage_ID",
             "Step_ID",
             "Equipment ID",
@@ -414,14 +435,22 @@ class DefectWorseToolApp(tk.Tk):
         label: str,
         variable: tk.StringVar,
         command,
-    ) -> None:
+    ) -> Tuple[ttk.Entry, ttk.Button]:
         ttk.Label(parent, text=label, style="Card.TLabel", width=17).grid(
             row=row, column=0, sticky="w", pady=3
         )
-        ttk.Entry(parent, textvariable=variable).grid(
-            row=row, column=1, columnspan=3, sticky="ew", padx=(0, 8), pady=3
-        )
-        ttk.Button(parent, text="Browse", command=command).grid(row=row, column=4, sticky="ew", pady=3)
+        entry = ttk.Entry(parent, textvariable=variable)
+        entry.grid(row=row, column=1, columnspan=3, sticky="ew", padx=(0, 8), pady=3)
+        button = ttk.Button(parent, text="Browse", command=command)
+        button.grid(row=row, column=4, sticky="ew", pady=3)
+        return entry, button
+
+    def _sync_bsl_source_state(self) -> None:
+        if not hasattr(self, "bsl_entry"):
+            return
+        state = "normal" if self._selected_bsl_source() == BSL_SOURCE_FILE else "disabled"
+        self.bsl_entry.configure(state=state)
+        self.bsl_browse_button.configure(state=state)
 
     def _build_chart_tab(self) -> None:
         self.chart_tab.columnconfigure(1, weight=1)
@@ -879,10 +908,11 @@ class DefectWorseToolApp(tk.Tk):
     def _collect_analysis_options(self) -> dict:
         input_path = self.input_path.get().strip()
         bsl_path = self.bsl_path.get().strip()
+        bsl_source = self._selected_bsl_source()
         output_path = self.output_path.get().strip()
         if not input_path or not Path(input_path).is_file():
             raise ValueError("Select a valid raw defect data file.")
-        if not bsl_path or not Path(bsl_path).is_file():
+        if bsl_source == BSL_SOURCE_FILE and (not bsl_path or not Path(bsl_path).is_file()):
             raise ValueError("Select a valid BSL file.")
         if not output_path:
             raise ValueError("Choose an output Excel path.")
@@ -903,6 +933,7 @@ class DefectWorseToolApp(tk.Tk):
         return {
             "input_path": input_path,
             "bsl_path": bsl_path,
+            "bsl_source": bsl_source,
             "output_path": output_path,
             "input_sheet": self.input_sheet.get().strip() or None,
             "output_sheet": output_sheet,
@@ -931,6 +962,7 @@ class DefectWorseToolApp(tk.Tk):
                 special_process_rules=options["special_process_rules"],
                 process_aggregation=options["process_aggregation"],
                 data_window=options["data_window"],
+                bsl_source=options["bsl_source"],
             )
             output = write_result_to_excel(
                 result,
@@ -1233,6 +1265,10 @@ class DefectWorseToolApp(tk.Tk):
     def _selected_outlier_handling(self) -> str:
         label = self.outlier_handling.get().strip()
         return normalize_outlier_handling(OUTLIER_HANDLING_LABELS.get(label, label))
+
+    def _selected_bsl_source(self) -> str:
+        label = self.bsl_source.get().strip()
+        return normalize_bsl_source(BSL_SOURCE_LABELS.get(label, label))
 
     def _build_process_stage_values(
         self,
@@ -1583,15 +1619,18 @@ class DefectWorseToolApp(tk.Tk):
         self.fig.clear()
         self._reset_chart_artists()
         ax = self.fig.add_subplot(111)
-        groups = self._ordered_trend_groups(trend)
+        spaced_trend = add_equal_spacing_index(trend)
+        groups = self._ordered_trend_groups(spaced_trend)
         colors = self._colors(len(groups))
+        max_observations = 0
+        total_points = 0
         for color, tool in zip(colors, groups):
-            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time")
+            part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
             label = self._display_tool_label(part, str(tool))
             style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
             line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
             line, = ax.plot(
-                part["Selected_Time"],
+                part["Observation_Index"],
                 part[defect],
                 marker="o" if self.marker_size.get() > 0 else None,
                 markersize=self.marker_size.get(),
@@ -1600,16 +1639,26 @@ class DefectWorseToolApp(tk.Tk):
                 label=label,
             )
             self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-        ax.set_title("{} | {} | Trend overlay by {}".format(defect, stage, time_col))
-        ax.set_xlabel(time_col)
+            max_observations = max(max_observations, len(part))
+            total_points += len(part)
+        ax.set_title("{} | {} | Trend overlay (equal point spacing)".format(defect, stage))
+        ax.set_xlabel("Observation order within each Tool (sorted by {}; every point is 1 unit apart)".format(time_col))
         ax.set_ylabel("Defect count")
+        ax.xaxis.set_major_locator(
+            MaxNLocator(nbins=min(12, max(1, max_observations)), integer=True)
+        )
+        if max_observations:
+            ax.set_xlim(0.5, max_observations + 0.5)
         ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         ax.legend(loc="best", fontsize=8, frameon=True, framealpha=0.88)
         self._apply_y_limits(ax)
-        self.fig.autofmt_xdate()
         self.fig.tight_layout()
         self.canvas.draw()
-        self.status.set("Trend chart rendered. Click a line to edit it.")
+        self.status.set(
+            "Equal-spacing trend rendered with {} point(s). Click a line to edit it.".format(
+                total_points
+            )
+        )
 
     def _draw_trend_all_chambers(
         self,
@@ -1644,7 +1693,11 @@ class DefectWorseToolApp(tk.Tk):
             max_observations = max(max_observations, len(part))
             total_points += len(part)
         ax.set_title("{} | {} | All groups trend (equal point spacing)".format(defect, stage))
-        ax.set_xlabel("Observation order within each group (sorted by {}; equal spacing)".format(time_col))
+        ax.set_xlabel(
+            "Observation order within each Tool (sorted by {}; every point is 1 unit apart)".format(
+                time_col
+            )
+        )
         ax.set_ylabel("Defect count")
         ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
         ax.xaxis.set_major_locator(

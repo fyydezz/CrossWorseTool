@@ -19,6 +19,7 @@ Override keys include defect, process, chart-group type, and group value. Overri
 Data-completeness rules:
 
 - `calculate_recent_trimmed_bsl()` operates on a temporary numeric Series. Its quantile trimming must never be reused as the DataFrame passed to `summarize_one_defect()` or chart preparation.
+- `calculate_mean_bsl()` applies the selected outlier handling to the complete defect-wide analysis window and returns one global baseline Mean. It does not group by Tool.
 - `prepare_trend_data()` keeps one row per valid chart input row and performs a stable Tool/time/source-order sort. Do not reintroduce the former Tool/time `groupby().mean()` because it collapsed multiple wafers into one point.
 - `add_equal_spacing_index()` assigns a 1-based observation index within each Tool without dropping rows.
 - `filter_by_recent_scan_time()` rejects invalid Scan Time values rather than silently excluding them from recent-window analysis.
@@ -65,8 +66,9 @@ CSV/Excel
   -> validate_required_columns()
   -> add_grouping_columns()
   -> detect_defect_columns()
-  -> read_bsl_table()
-  -> build_bsl_lookup()
+  -> normalize_bsl_source()
+  -> file: read_bsl_table() + build_bsl_lookup()
+  -> calculated_mean: calculate_mean_bsl()
   -> 每个 defect 调用 summarize_one_defect()
   -> handle_outliers_for_defect()
   -> apply_special_process_rules()
@@ -94,6 +96,8 @@ CSV/Excel
   - `defect_lookup[defect] = bsl`
 - `get_bsl_count(...)`：普通 process 使用，优先 stage-specific BSL，找不到时回退全局 defect BSL。
 - `get_special_bsl_count(...)`：特殊 Step-only 合并组使用，优先全局 defect BSL；没有全局 BSL 时取参与 stage 的最大 stage-specific BSL。
+- `normalize_bsl_source(value)`：规范化 `file` / `calculated_mean` 两种 BSL 来源。
+- `calculate_mean_bsl(...)`：在已选择的数据窗口内，按当前 outlier 方式处理该 defect 的全部 Tool 数据后取整体 Mean。该值作为 defect 全局 BSL。
 
 ### 3.3 Equipment/Chamber 聚合
 
@@ -201,7 +205,7 @@ apply_process_aggregation(df, process_aggregation)
 7. 查 BSL。
 8. 保留 `Mean_Count >= BSL * bsl_multiplier` 或 `Median_Count >= BSL * bsl_multiplier` 的组。
 
-`build_worse_tool_result()` 是完整分析入口，循环处理所有 defect 并 concat 结果。
+`build_worse_tool_result()` 是完整分析入口，循环处理所有 defect 并 concat 结果。`bsl_source="file"` 时读取外部 BSL；`bsl_source="calculated_mean"` 时不要求 `bsl_path`，并为每个 defect 生成一个全局 Mean BSL。输出通过 `BSL Source` 标记实际来源。
 
 ### 3.8 输出
 
@@ -229,6 +233,13 @@ apply_process_aggregation(df, process_aggregation)
 ```powershell
 --process-aggregation stage_step
 --process-aggregation step
+```
+
+当前 BSL 来源参数：
+
+```powershell
+--bsl-source file --bsl demo_bsl.csv
+--bsl-source calculated_mean
 ```
 
 ## 4. defect_worse_ui.py 结构
@@ -260,6 +271,7 @@ Button callback
 - `start_analysis()`：入口，校验 UI 状态并启动后台线程。
 - `_collect_analysis_options()`：从 UI 读取并校验参数；特殊 process rules 在这里解析，格式错误会提示用户。
 - `process_aggregation`：Run 页下拉框，默认 `Stage_ID + Step_ID`；选择 `Step_ID only` 时传给 `build_worse_tool_result(..., process_aggregation="step")`。
+- `bsl_source`：Run 页下拉框。`file` 模式要求 BSL 文件；`calculated_mean` 模式禁用 BSL 文件控件并使用 defect-wide Mean。
 - `_analysis_worker()`：调用 `build_worse_tool_result()` 和 `write_result_to_excel()`，然后重新加载 raw data 用于图表。
 - `_show_result_preview()`：显示前 500 行结果。
 
@@ -274,8 +286,8 @@ Button callback
 - `_draw_box()`：Box chart 按 median、mean 降序排列；根据每组可用像素宽度自适应统计字号、箱宽和 raw-data 散点大小。
 - `_filter_chart_group_mode()`：创建独立 `Chart_Group`。`By Chamber` 直接使用 `Chamber_ID`，`By Equipment ID` 直接使用 `Equipment_ID`，不改变核心 Worse Tool 的 `Tool_Group`。
 - `_filter_chart_process()`：直接复用核心层的 `apply_special_process_rules()` 和 `apply_process_aggregation()`，保证 special process 的 Chart 与 Worse Tool 使用同一批数据。
-- `_draw_trend()`：普通真实时间 trend overlay。
-- `_draw_trend_all_chambers()`：所有 chamber 同坐标系 trend。
+- `_draw_trend()`：所有 Tool 同坐标系的等距点序号 overlay。
+- `_draw_trend_all_chambers()`：所有 Tool 同坐标系的等距点序号对比。两者均只用时间排序，不用时间差确定 X 坐标。
 - `_draw_trend_sequence_by_tool()`：按 tool 分段拼接的 trend。每个 tool 内按时间排序，tool 之间加虚线分隔，Y 轴共用。
 - `_ordered_trend_groups()`：tool/chamber 排序。
 - `_colors()`：颜色方案。

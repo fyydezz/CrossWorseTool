@@ -45,6 +45,9 @@ DATA_WINDOW_DAYS = {
 OUTLIER_HANDLING_FILTER = "filter"
 OUTLIER_HANDLING_CAP = "cap"
 OUTLIER_HANDLING_CHOICES = (OUTLIER_HANDLING_FILTER, OUTLIER_HANDLING_CAP)
+BSL_SOURCE_FILE = "file"
+BSL_SOURCE_CALCULATED_MEAN = "calculated_mean"
+BSL_SOURCE_CHOICES = (BSL_SOURCE_FILE, BSL_SOURCE_CALCULATED_MEAN)
 
 
 def normalize_column_name(name: object) -> str:
@@ -373,6 +376,38 @@ def calculate_recent_trimmed_bsl(df: pd.DataFrame, defect_col: str) -> Optional[
     return float(trimmed.mean())
 
 
+def normalize_bsl_source(value: str) -> str:
+    normalized = str(value or BSL_SOURCE_FILE).strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "file": BSL_SOURCE_FILE,
+        "input": BSL_SOURCE_FILE,
+        "input_file": BSL_SOURCE_FILE,
+        "calculated_mean": BSL_SOURCE_CALCULATED_MEAN,
+        "calculated": BSL_SOURCE_CALCULATED_MEAN,
+        "mean": BSL_SOURCE_CALCULATED_MEAN,
+    }
+    if normalized not in aliases:
+        raise ValueError("bsl_source must be one of: {}".format(", ".join(BSL_SOURCE_CHOICES)))
+    return aliases[normalized]
+
+
+def calculate_mean_bsl(
+    df: pd.DataFrame,
+    defect_col: str,
+    outlier_sigma: float = 3.0,
+    outlier_handling: str = OUTLIER_HANDLING_FILTER,
+) -> Optional[float]:
+    cleaned = handle_outliers_for_defect(
+        df,
+        defect_col,
+        outlier_sigma=outlier_sigma,
+        outlier_handling=outlier_handling,
+    )
+    if cleaned.empty:
+        return None
+    return float(cleaned[defect_col].mean())
+
+
 def normalize_outlier_handling(value: str) -> str:
     normalized = str(value or OUTLIER_HANDLING_FILTER).strip().lower().replace("-", "_")
     aliases = {
@@ -440,6 +475,7 @@ def summarize_one_defect(
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
     recent_trimmed_bsl: Optional[float] = None,
     data_window: str = DATA_WINDOW_ALL,
+    bsl_source: str = BSL_SOURCE_FILE,
 ) -> pd.DataFrame:
     handling = normalize_outlier_handling(outlier_handling)
     filtered = handle_outliers_for_defect(
@@ -509,6 +545,7 @@ def summarize_one_defect(
     grouped["Equipment ID"] = grouped["Equipment_Group"]
     grouped["Chamber ID"] = np.where(grouped["Group_Level"] == "Chamber", grouped["Chamber_Group"], "")
     grouped["BSL Multiplier"] = float(bsl_multiplier)
+    grouped["BSL Source"] = normalize_bsl_source(bsl_source)
     grouped["Outlier Handling"] = handling
     grouped["Recent Trimmed BSL"] = recent_trimmed_bsl
     grouped["Data Window"] = normalize_data_window(data_window)
@@ -520,6 +557,7 @@ def summarize_one_defect(
     output_cols = [
         "Defect type",
         "BSL count",
+        "BSL Source",
         "Stage_ID",
         "Step_ID",
         "Equipment ID",
@@ -544,7 +582,7 @@ def summarize_one_defect(
 
 def build_worse_tool_result(
     input_path: str,
-    bsl_path: str,
+    bsl_path: Optional[str] = None,
     defect_columns: Optional[Sequence[str]] = None,
     input_sheet: Optional[str] = None,
     bsl_multiplier: float = 1.5,
@@ -554,23 +592,43 @@ def build_worse_tool_result(
     special_process_rules: Optional[SpecialProcessRules] = None,
     process_aggregation: str = PROCESS_AGGREGATION_STAGE_STEP,
     data_window: str = DATA_WINDOW_ALL,
+    bsl_source: str = BSL_SOURCE_FILE,
 ) -> pd.DataFrame:
     df = read_table(input_path, sheet_name=input_sheet)
     validate_required_columns(df)
     df = add_grouping_columns(df)
     df = filter_by_recent_scan_time(df, data_window=data_window)
     defects = detect_defect_columns(df, defect_columns)
-    bsl = read_bsl_table(bsl_path)
-    stage_lookup, defect_lookup = build_bsl_lookup(bsl)
+    source = normalize_bsl_source(bsl_source)
+    if source == BSL_SOURCE_FILE:
+        if not bsl_path:
+            raise ValueError("A BSL file is required when bsl_source is 'file'.")
+        bsl = read_bsl_table(bsl_path)
+        stage_lookup, defect_lookup = build_bsl_lookup(bsl)
+    else:
+        stage_lookup, defect_lookup = {}, {}
 
     pieces = []
     for defect in defects:
         recent_trimmed_bsl = calculate_recent_trimmed_bsl(df, defect)
+        current_stage_lookup = stage_lookup
+        current_defect_lookup = defect_lookup
+        if source == BSL_SOURCE_CALCULATED_MEAN:
+            calculated_bsl = calculate_mean_bsl(
+                df,
+                defect,
+                outlier_sigma=outlier_sigma,
+                outlier_handling=outlier_handling,
+            )
+            if calculated_bsl is None:
+                continue
+            current_stage_lookup = {}
+            current_defect_lookup = {str(defect).strip().casefold(): calculated_bsl}
         piece = summarize_one_defect(
             df,
             defect,
-            stage_lookup,
-            defect_lookup,
+            current_stage_lookup,
+            current_defect_lookup,
             bsl_multiplier=bsl_multiplier,
             min_wafers=min_wafers,
             outlier_sigma=outlier_sigma,
@@ -579,6 +637,7 @@ def build_worse_tool_result(
             process_aggregation=process_aggregation,
             recent_trimmed_bsl=recent_trimmed_bsl,
             data_window=data_window,
+            bsl_source=source,
         )
         if not piece.empty:
             pieces.append(piece)
@@ -587,6 +646,7 @@ def build_worse_tool_result(
             columns=[
                 "Defect type",
                 "BSL count",
+                "BSL Source",
                 "Stage_ID",
                 "Step_ID",
                 "Equipment ID",
@@ -707,7 +767,16 @@ def parse_special_process_rules(raw: Optional[str]) -> SpecialProcessRules:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate Defect worse tool cross result.")
     parser.add_argument("--input", required=True, help="Input defect table: .csv, .xlsx, .xlsm, or .xls")
-    parser.add_argument("--bsl", required=True, help="BSL csv/xlsx with Defect type and BSL count columns")
+    parser.add_argument("--bsl", default=None, help="BSL csv/xlsx. Required when --bsl-source=file.")
+    parser.add_argument(
+        "--bsl-source",
+        choices=BSL_SOURCE_CHOICES,
+        default=BSL_SOURCE_FILE,
+        help=(
+            "BSL baseline source. file uses --bsl; calculated_mean uses the defect-wide mean "
+            "after the selected data window and outlier handling."
+        ),
+    )
     parser.add_argument("--output", required=True, help="Output Excel path.")
     parser.add_argument("--input-sheet", default=None, help="Excel sheet name or index for input file.")
     parser.add_argument("--output-sheet", default=DEFAULT_SHEET_NAME, help="Output sheet name.")
@@ -764,6 +833,7 @@ def main() -> None:
         special_process_rules=parse_special_process_rules(args.special_process_rules),
         process_aggregation=args.process_aggregation,
         data_window=args.data_window,
+        bsl_source=args.bsl_source,
     )
     write_result_to_excel(
         result,
