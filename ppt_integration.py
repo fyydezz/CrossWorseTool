@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -26,6 +26,13 @@ class PPTGenerationContext:
     outlier_sigma: float
     selected_defect: Optional[str]
     selected_process_stage: Optional[str]
+    bsl_source: str = "file"
+    data_window: str = "all"
+    outlier_handling: str = "filter"
+    process_aggregation: str = "stage_step"
+    special_process_rules: dict = field(default_factory=dict)
+    chart_group_mode: str = "By Chamber"
+    time_column: str = "Scan_Time"
 
 
 def run_external_ppt_method(
@@ -55,12 +62,9 @@ def run_ppt_generation(
     context: PPTGenerationContext,
     log_callback: Optional[LogCallback] = None,
 ) -> Path:
-    """
-    Replace this function body with the internal-network PPT implementation.
+    """Run the built-in report on the worker thread, without accessing Tk.
 
-    The UI calls this function on a worker thread. The implementation should
-    create the requested PPT file and return its final path. Do not access
-    Tkinter widgets from this function.
+    Internal installations may delegate to run_external_ppt_method here.
     """
     if log_callback is not None:
         log_callback("PPT integration was called.")
@@ -68,9 +72,5 @@ def run_ppt_generation(
         log_callback("Template PPT: {}".format(context.ppt_template_path))
         log_callback("Input image folder: {}".format(context.input_image_path))
 
-    return run_external_ppt_method(
-        ppt_output_path=context.ppt_output_path,
-        ppt_template_path=context.ppt_template_path,
-        input_image_path=context.input_image_path,
-        log_callback=log_callback,
-    )
+    from ppt_report import generate_report
+    return generate_report(context, log_callback)

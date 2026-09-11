@@ -13,6 +13,7 @@ import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.colors import is_color_like, to_hex
 from matplotlib.lines import Line2D
+from matplotlib.font_manager import FontProperties
 from matplotlib.ticker import MaxNLocator
 
 from defect_worse_tool import (
@@ -38,6 +39,7 @@ from defect_worse_tool import (
     OUTLIER_HANDLING_FILTER,
     BSL_SOURCE_CALCULATED_MEAN,
     BSL_SOURCE_FILE,
+    BSL_SOURCE_RECENT_MEAN,
     normalize_bsl_source,
     read_table,
     filter_by_recent_scan_time,
@@ -69,6 +71,7 @@ OUTLIER_HANDLING_LABELS = {
 }
 BSL_SOURCE_LABELS = {
     "Input BSL file": BSL_SOURCE_FILE,
+    "Latest 2 weeks mean": BSL_SOURCE_RECENT_MEAN,
     "Calculated defect mean (after outlier handling)": BSL_SOURCE_CALCULATED_MEAN,
 }
 CHART_GROUP_MODE_CHAMBER = "By Chamber"
@@ -146,6 +149,20 @@ def sample_tick_labels(
         [int(positions[index]) for index in selected_indexes],
         [str(labels[index]) for index in selected_indexes],
     )
+
+
+def rank_worse_results(result: pd.DataFrame) -> pd.DataFrame:
+    ranked = result.copy()
+    if ranked.empty:
+        ranked["Priority Score"] = pd.Series(dtype=float)
+        return ranked
+    mean = pd.to_numeric(ranked["Mean_Count"], errors="coerce").fillna(0)
+    bsl = pd.to_numeric(ranked["BSL count"], errors="coerce")
+    ratio = mean / bsl.where(bsl > 0)
+    ratio = ratio.mask((bsl == 0) & (mean > 0), float("inf")).fillna(0)
+    count = pd.to_numeric(ranked["Wafer_Count"], errors="coerce").fillna(0)
+    ranked["Priority Score"] = 100 * (0.7 * ratio.rank(pct=True) + 0.3 * count.rank(pct=True))
+    return ranked.sort_values("Priority Score", ascending=False, kind="mergesort")
 
 
 def build_equal_spacing_time_ticks(
@@ -422,7 +439,7 @@ class DefectWorseToolApp(tk.Tk):
         self._file_row(
             controls,
             12,
-            "Input image folder",
+            "Chart export folder",
             self.ppt_input_image_path,
             self.browse_ppt_image,
         )
@@ -445,7 +462,7 @@ class DefectWorseToolApp(tk.Tk):
         )
         self.ppt_button = ttk.Button(
             action_frame,
-            text="Run PPT Generator",
+            text="Generate Worse Tool PPT",
             command=self.start_ppt_generation,
         )
         self.ppt_button.grid(row=0, column=3, padx=(8, 0))
@@ -458,6 +475,7 @@ class DefectWorseToolApp(tk.Tk):
             row=0, column=0, sticky="w", pady=(0, 8)
         )
         columns = (
+            "Priority Score",
             "Defect type",
             "BSL count",
             "BSL Source",
@@ -1099,10 +1117,9 @@ class DefectWorseToolApp(tk.Tk):
             raise ValueError("Choose a PPT output path.")
         if Path(ppt_output_path).suffix.lower() != ".pptx":
             raise ValueError("PPT output path must use the .pptx extension.")
-        if not ppt_template_path or not Path(ppt_template_path).is_file():
+        if ppt_template_path and not Path(ppt_template_path).is_file():
             raise ValueError("Select a valid PPT template file.")
-        if not input_image_path or not Path(input_image_path).is_dir():
-            raise ValueError("Select a valid input image folder.")
+        self._collect_analysis_options()
         Path(ppt_output_path).parent.mkdir(parents=True, exist_ok=True)
 
         raw_path = self.input_path.get().strip()
@@ -1122,6 +1139,13 @@ class DefectWorseToolApp(tk.Tk):
             outlier_sigma=float(self.outlier_sigma.get()),
             selected_defect=self.defect_type.get().strip() or None,
             selected_process_stage=self.process_stage.get().strip() or None,
+            bsl_source=self._selected_bsl_source(),
+            data_window=self._selected_data_window(self.analysis_data_window),
+            outlier_handling=self._selected_outlier_handling(),
+            process_aggregation=self._selected_process_aggregation(),
+            special_process_rules=self._parse_special_step_rules_for_ui(),
+            chart_group_mode=self.chart_group_mode.get(),
+            time_column=self.time_column.get(),
         )
 
     def _ppt_worker(self, context: PPTGenerationContext) -> None:
@@ -1445,7 +1469,7 @@ class DefectWorseToolApp(tk.Tk):
         for item in self.result_tree.get_children():
             self.result_tree.delete(item)
         preview_columns = list(self.result_tree["columns"])
-        for _, row in result.head(500).iterrows():
+        for _, row in rank_worse_results(result).head(500).iterrows():
             values = []
             for column in preview_columns:
                 value = row.get(column, "")
@@ -1541,6 +1565,7 @@ class DefectWorseToolApp(tk.Tk):
         medians: Sequence[float],
         means: Sequence[float],
         stats_font_size: float,
+        show_summary: bool = True,
     ) -> None:
         key_handles = [
             Line2D([0], [0], color="#B40426", linewidth=6, label="Higher median"),
@@ -1586,6 +1611,8 @@ class DefectWorseToolApp(tk.Tk):
             labelspacing=0.45,
         )
         sidebar_ax.add_artist(key_legend)
+        if not show_summary:
+            return
 
         sidebar_ax.text(
             0.0,
@@ -1689,6 +1716,14 @@ class DefectWorseToolApp(tk.Tk):
         pixels_per_box = self._box_pixels_per_group(len(grouped_parts), ax=ax)
         compact_labels = len(grouped_parts) > 12 or pixels_per_box < 80
         stats_font_size = self._box_stats_font_size(pixels_per_box)
+        measure = self.fig.canvas.get_renderer()
+        font = FontProperties(size=stats_font_size)
+        stat_labels = ["N={}".format(item[3]) for item in grouped_parts]
+        stat_labels += ["Median={:.2f}".format(item[4]) for item in grouped_parts]
+        stat_labels += ["Mean={:.2f}".format(item[5]) for item in grouped_parts]
+        text_width = max(measure.get_text_width_height_descent(label, font, False)[0]
+                         for label in stat_labels)
+        inline_stats = pixels_per_box >= max(115, text_width + 16) and self._get_y_limits() == (None, None)
         labels = ["T{}".format(index) for index in range(1, len(grouped_parts) + 1)] if compact_labels else full_labels
         groups = [item[2] for item in grouped_parts]
         counts = [item[3] for item in grouped_parts]
@@ -1785,7 +1820,20 @@ class DefectWorseToolApp(tk.Tk):
             medians,
             means,
             stats_font_size,
+            show_summary=not inline_stats,
         )
+        if inline_stats:
+            for index, (count, median, mean) in enumerate(zip(counts, medians, means), 1):
+                stats = []
+                if self.show_box_count.get():
+                    stats.append("N={}".format(count))
+                if self.show_box_median.get():
+                    stats.append("Median={:.2f}".format(median))
+                if self.show_box_mean.get():
+                    stats.append("Mean={:.2f}".format(mean))
+                ax.text(index, 0.98, "\n".join(stats), transform=ax.get_xaxis_transform(),
+                        ha="center", va="top", fontsize=stats_font_size)
+            ax.margins(y=0.28)
         self._apply_y_limits(ax)
         self.canvas.draw()
         self.status.set("Box chart rendered. Click a box to edit it. Groups: {}".format(len(groups)))

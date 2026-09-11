@@ -1,5 +1,13 @@
 # Defect Worse Tool Cross 开发者文档
 
+## 2026-09 报告与排序接口
+
+`ppt_report.generate_report(context, log_callback)` 重新调用核心分析入口，按 Defect/Stage/Step 去重后生成页面。每页从原始数据独立准备 14d Box 与 all-data Sequential Trend，复用 process 聚合和 outlier 清洗函数。`make_renderer()` 使用 Agg Figure 和普通变量适配器复用 UI 绘图，不创建 Tk 控件。`PPTGenerationContext` 新增带默认值的 BSL 来源、时间窗口、特殊规则、聚合、画图分组和时间列字段；原外部三路径接口保留。
+
+`recent_mean` 在应用分析时间窗口之前保存原始数据副本，从该副本单独取最近 14 天计算清洗后均值。`rank_worse_results()` 仅影响预览顺序，权重为 Mean/BSL 百分位 0.7、Wafer_Count 百分位 0.3。BSL=0 且 Mean>0 按最高严重程度排名。
+
+`_draw_box()` 根据每组绘图区像素宽度与字号选择图内统计或右侧统计。新增测试 `test_ppt_report.py` 覆盖 BSL 窗口隔离、排序、稀疏 Box 和实际 PPT 分页生成。模板保留主题/母版及页面尺寸，不复制模板示例页内容。
+
 ## Interactive Chart Architecture (latest UI)
 
 Chart layout and styling are intentionally separated:

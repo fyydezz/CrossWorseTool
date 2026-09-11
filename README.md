@@ -1,5 +1,16 @@
 # Defect Worse Tool Cross 使用说明
 
+## 2026-09 更新
+
+- BSL source 新增 `Latest 2 weeks mean`，无需 BSL 文件。固定取输入数据最新 Scan Time 往前 14 天的数据，按当前 3σ 删除/封顶方式处理后计算每个 Defect 的整体均值；该窗口独立于分析窗口，上下 5% 截尾不参与计算。
+- `Generate Worse Tool PPT` 按当前 Run 参数重新计算命中结果，每个 Defect × layer 一页，标题为 `Defect type cross to layer name`。左侧 Box 使用最近 14 天，右侧 Sequential Trend 使用 All data。图中包含该 layer 全部 Tool 以便比较，清洗方式与 Run 一致。
+- layer 默认 Stage + Step；Step-only 和特殊规则沿用分析时的合并口径。Charts 页的分组和时间列选择作用于 PPT。
+- PPT output 必填。模板可留空，默认 16:9；提供模板则保留母版/主题和尺寸并替换示例页。Chart export folder 为生成图片的输出目录，留空自动创建在 PPT 旁边。日志输出至终端及 UI 状态栏。
+- 部署时重新执行 `pip install -r requirements.txt`，新增依赖 `python-pptx>=0.6.21,<1.0.0`。
+- Box 空间充足时在图内上方显示 N/Median/Mean，密集时使用右侧汇总；判断依据为每个 Box 可用像素宽度及字号。
+- Result preview 按 Priority Score 降序：70% 为 Mean/BSL 的百分位排名，30% 为 unique wafer 数的百分位排名。仅用于本次优先级，不改变阈值，也不表示统计显著性。
+- 默认 PPT 按钮已有内置实现。旧外部三路径方法仍保留给内网自定义，但不再要求用户自行实现才能生成 PPT。
+
 ## Chart Interaction (latest UI)
 
 The Charts tab now separates workflow controls from visual styling:

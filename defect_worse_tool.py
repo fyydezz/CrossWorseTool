@@ -47,7 +47,8 @@ OUTLIER_HANDLING_CAP = "cap"
 OUTLIER_HANDLING_CHOICES = (OUTLIER_HANDLING_FILTER, OUTLIER_HANDLING_CAP)
 BSL_SOURCE_FILE = "file"
 BSL_SOURCE_CALCULATED_MEAN = "calculated_mean"
-BSL_SOURCE_CHOICES = (BSL_SOURCE_FILE, BSL_SOURCE_CALCULATED_MEAN)
+BSL_SOURCE_RECENT_MEAN = "recent_mean"
+BSL_SOURCE_CHOICES = (BSL_SOURCE_FILE, BSL_SOURCE_CALCULATED_MEAN, BSL_SOURCE_RECENT_MEAN)
 
 
 def normalize_column_name(name: object) -> str:
@@ -385,6 +386,7 @@ def normalize_bsl_source(value: str) -> str:
         "calculated_mean": BSL_SOURCE_CALCULATED_MEAN,
         "calculated": BSL_SOURCE_CALCULATED_MEAN,
         "mean": BSL_SOURCE_CALCULATED_MEAN,
+        "recent_mean": BSL_SOURCE_RECENT_MEAN,
     }
     if normalized not in aliases:
         raise ValueError("bsl_source must be one of: {}".format(", ".join(BSL_SOURCE_CHOICES)))
@@ -597,6 +599,7 @@ def build_worse_tool_result(
     df = read_table(input_path, sheet_name=input_sheet)
     validate_required_columns(df)
     df = add_grouping_columns(df)
+    all_data = df.copy()
     df = filter_by_recent_scan_time(df, data_window=data_window)
     defects = detect_defect_columns(df, defect_columns)
     source = normalize_bsl_source(bsl_source)
@@ -613,9 +616,10 @@ def build_worse_tool_result(
         recent_trimmed_bsl = calculate_recent_trimmed_bsl(df, defect)
         current_stage_lookup = stage_lookup
         current_defect_lookup = defect_lookup
-        if source == BSL_SOURCE_CALCULATED_MEAN:
+        if source in (BSL_SOURCE_CALCULATED_MEAN, BSL_SOURCE_RECENT_MEAN):
             calculated_bsl = calculate_mean_bsl(
-                df,
+                filter_by_recent_scan_time(all_data, DATA_WINDOW_14D)
+                if source == BSL_SOURCE_RECENT_MEAN else df,
                 defect,
                 outlier_sigma=outlier_sigma,
                 outlier_handling=outlier_handling,
