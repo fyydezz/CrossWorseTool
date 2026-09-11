@@ -40,6 +40,7 @@ from defect_worse_tool import (
     BSL_SOURCE_CALCULATED_MEAN,
     BSL_SOURCE_FILE,
     BSL_SOURCE_RECENT_MEAN,
+    GOLDEN_COLUMNS,
     normalize_bsl_source,
     read_table,
     filter_by_recent_scan_time,
@@ -486,6 +487,7 @@ class DefectWorseToolApp(tk.Tk):
             "Mean_Count",
             "Median_Count",
             "Wafer_Count",
+            *GOLDEN_COLUMNS,
             "Outlier Handling",
             "Recent Trimmed BSL",
             "Data Window",
@@ -1590,7 +1592,7 @@ class DefectWorseToolApp(tk.Tk):
                 [0],
                 marker="o",
                 color="none",
-                markerfacecolor="#7B8794",
+                markerfacecolor="#000000",
                 markeredgecolor="#FFFFFF",
                 label="Raw data",
             )
@@ -1737,6 +1739,7 @@ class DefectWorseToolApp(tk.Tk):
             groups,
             labels=labels,
             showmeans=self.show_box_mean.get(),
+            showfliers=False,
             patch_artist=True,
             widths=box_width,
             medianprops={"color": "#C23B22", "linewidth": 2.2},
@@ -1757,7 +1760,6 @@ class DefectWorseToolApp(tk.Tk):
             },
         )
         rank_colors = self._box_rank_colors(len(groups))
-        rendered_box_colors: List[object] = []
         group_label = self._chart_group_label(df)
         for patch, group_info, rank_color in zip(box["boxes"], grouped_parts, rank_colors):
             tool, display_label = group_info[0], group_info[1]
@@ -1765,7 +1767,6 @@ class DefectWorseToolApp(tk.Tk):
             box_color, outline_width = self._artist_style(
                 "box", style_key, rank_color, float(self.box_line_width.get())
             )
-            rendered_box_colors.append(box_color)
             patch.set_facecolor(box_color)
             patch.set_alpha(0.72)
             patch.set_edgecolor(box_color)
@@ -1778,15 +1779,15 @@ class DefectWorseToolApp(tk.Tk):
                 box_color,
                 outline_width,
             )
-        for index, (values, point_color) in enumerate(zip(groups, rendered_box_colors), start=1):
+        for index, values in enumerate(groups, start=1):
             ax.scatter(
                 self._jitter_positions(index, len(values)),
                 values,
                 s=raw_point_size,
-                color=point_color,
-                edgecolors="#FFFFFF",
-                linewidths=0.35,
-                alpha=0.55,
+                color="#000000",
+                edgecolors="none",
+                linewidths=0,
+                alpha=1.0,
                 zorder=3,
             )
         ax.set_title("{} | {} | Box by {} (red high, blue low)".format(defect, stage, group_label))

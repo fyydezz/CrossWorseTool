@@ -49,6 +49,10 @@ BSL_SOURCE_FILE = "file"
 BSL_SOURCE_CALCULATED_MEAN = "calculated_mean"
 BSL_SOURCE_RECENT_MEAN = "recent_mean"
 BSL_SOURCE_CHOICES = (BSL_SOURCE_FILE, BSL_SOURCE_CALCULATED_MEAN, BSL_SOURCE_RECENT_MEAN)
+GOLDEN_COLUMNS = [
+    "Golden Equipment ID", "Golden Chamber ID", "Golden Mean_Count",
+    "Golden Wafer_Count", "Mean minus Golden", "Mean / Golden",
+]
 
 
 def normalize_column_name(name: object) -> str:
@@ -464,6 +468,26 @@ def filter_outliers_for_defect(
     )
 
 
+def add_golden_comparison(grouped: pd.DataFrame, min_wafers: int = 5) -> pd.DataFrame:
+    """Select a within-layer reference before filtering worse-tool hits."""
+    candidates = grouped.loc[grouped["Wafer_Count"] >= max(5, int(min_wafers))]
+    candidates = candidates.sort_values(
+        ["Mean_Count", "Median_Count", "Wafer_Count", "Tool_Group"],
+        ascending=[True, True, False, True], kind="mergesort",
+    ).drop_duplicates(["Stage_ID", "Step_ID"])
+    reference = candidates[["Stage_ID", "Step_ID", "Equipment_Group", "Chamber_Group",
+                            "Mean_Count", "Wafer_Count"]].rename(columns={
+        "Equipment_Group": "Golden Equipment ID", "Chamber_Group": "Golden Chamber ID",
+        "Mean_Count": "Golden Mean_Count", "Wafer_Count": "Golden Wafer_Count",
+    })
+    compared = grouped.merge(reference, on=["Stage_ID", "Step_ID"], how="left", validate="many_to_one")
+    compared["Mean minus Golden"] = compared["Mean_Count"] - compared["Golden Mean_Count"]
+    compared["Mean / Golden"] = compared["Mean_Count"] / compared["Golden Mean_Count"].where(
+        compared["Golden Mean_Count"] > 0
+    )
+    return compared
+
+
 def summarize_one_defect(
     df: pd.DataFrame,
     defect_col: str,
@@ -511,6 +535,7 @@ def summarize_one_defect(
     if grouped.empty:
         return grouped
 
+    grouped = add_golden_comparison(grouped, min_wafers)
     grouped["Defect type"] = defect_col
     defect_rules = {}
     if special_process_rules:
@@ -575,6 +600,7 @@ def summarize_one_defect(
         "Recent Trimmed BSL",
         "Data Window",
         "Trigger",
+        *GOLDEN_COLUMNS,
     ]
     return grouped[output_cols].sort_values(
         ["Defect type", "Stage_ID", "Step_ID", "Mean_Count", "Median_Count"],
@@ -666,6 +692,7 @@ def build_worse_tool_result(
                 "Recent Trimmed BSL",
                 "Data Window",
                 "Trigger",
+                *GOLDEN_COLUMNS,
             ]
         )
     return pd.concat(pieces, ignore_index=True)

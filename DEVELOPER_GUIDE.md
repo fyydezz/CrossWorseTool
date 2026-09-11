@@ -1,5 +1,11 @@
 # Defect Worse Tool Cross 开发者文档
 
+## Golden Tool 实现
+
+`add_golden_comparison(grouped, min_wafers)` 接收单个 Defect 的清洗后分组统计，在 Worse Tool 阈值筛选前执行。候选数门槛为 `max(5, min_wafers)`；按 Mean、Median 升序，Wafer_Count 降序和 Tool_Group 升序排序，再按 Stage_ID/Step_ID 取首个候选，以 many-to-one merge 回填。`GOLDEN_COLUMNS` 同时用于非空/空结果输出和 UI 预览。比较值不参与 BSL 或优先级计算。
+
+`test_golden_tool.py` 覆盖不足 5 片、重复 wafer、不同 layer、Step-only、特殊合并、零均值、无候选及旧 Excel append。Raw Data 使用独立黑色 scatter，`showfliers=False` 只关闭 boxplot 的重复离群点图层，不过滤任何散点数据。
+
 ## 2026-09 报告与排序接口
 
 `ppt_report.generate_report(context, log_callback)` 重新调用核心分析入口，按 Defect/Stage/Step 去重后生成页面。每页从原始数据独立准备 14d Box 与 all-data Sequential Trend，复用 process 聚合和 outlier 清洗函数。`make_renderer()` 使用 Agg Figure 和普通变量适配器复用 UI 绘图，不创建 Tk 控件。`PPTGenerationContext` 新增带默认值的 BSL 来源、时间窗口、特殊规则、聚合、画图分组和时间列字段；原外部三路径接口保留。

@@ -1,5 +1,13 @@
 # Defect Worse Tool Cross 使用说明
 
+## Golden Tool 对照列
+
+每个 Defect、每个当前 layer 的 Golden Tool 定义为：与本次分析相同时间窗口、相同清洗和聚合口径下，Mean_Count 最低的合格 Tool。有效片数按 `Lot_ID + Wafer_NO` 去重统计，至少 5 片；若 Minimum wafers 设置高于 5，则使用更高门槛。均值并列时依次按中位数更低、wafer 数更多、Tool ID 升序选定。
+
+输出及结果预览新增 `Golden Equipment ID`、`Golden Chamber ID`、`Golden Mean_Count`、`Golden Wafer_Count`、`Mean minus Golden`、`Mean / Golden` 六列。整机分组的 Golden Chamber 留空。Golden Mean 为 0 时倍数留空，避免除零；没有合格候选时对照列留空。Golden 是本次数据中的相对参考，不保证低于 BSL，也可能与当前 Worse Tool 是同一 Tool。
+
+Golden 在筛选 Worse Tool 之前从全部合格组中选择，沿用 Step-only 和特殊 layer 合并规则，不改变原有 Worse Tool 判定。Append 时历史行不回算，新列仅填入本次新增行。Box 的 Raw Data 全部改为黑色实心点，关闭额外的离群点标记以避免重复绘制；UI 和自动 PPT 共用这一绘图逻辑。
+
 ## 2026-09 更新
 
 - BSL source 新增 `Latest 2 weeks mean`，无需 BSL 文件。固定取输入数据最新 Scan Time 往前 14 天的数据，按当前 3σ 删除/封顶方式处理后计算每个 Defect 的整体均值；该窗口独立于分析窗口，上下 5% 截尾不参与计算。
