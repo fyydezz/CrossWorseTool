@@ -33,6 +33,7 @@ def make_renderer():
                     line_width=1.6, marker_size=3.0, color_scheme="Distinct",
                     custom_color="#1565C0", y_min="", y_max="",
                     selected_chart_item="", status="")
+    defaults.update(show_bsl_line=True, show_threshold_line=True, show_golden_line=True)
     for name, value in defaults.items():
         setattr(renderer, name, Value(value))
     renderer.chart_artist_registry = {}
@@ -45,6 +46,8 @@ def generate_report(context, log_callback=None):
     from pptx import Presentation
     from pptx.util import Inches, Pt
     from defect_worse_ui import prepare_trend_data
+    from chart_context import annotate_chart_data, analysis_references
+    from PIL import Image
 
     log = log_callback or (lambda message: None)
     log("Recalculating worse tools using current analysis settings.")
@@ -75,12 +78,16 @@ def generate_report(context, log_callback=None):
         presentation.slides._sldIdLst.remove(slide_id)
     layout = min(presentation.slide_layouts, key=lambda candidate: len(candidate.placeholders))
     renderer = make_renderer()
+    for name in ("show_bsl_line", "show_threshold_line", "show_golden_line"):
+        renderer.__dict__[name].set(getattr(context, name, True))
     pages = result[["Defect type", "Stage_ID", "Step_ID"]].drop_duplicates()
     width, height = presentation.slide_width, presentation.slide_height
     for page_number, (_, row) in enumerate(pages.iterrows(), 1):
         defect, stage, step = str(row["Defect type"]), str(row["Stage_ID"]), str(row["Step_ID"])
         layer = step if stage in {"ALL_STAGES", "SPECIAL_STEP_ONLY"} else "{} / {}".format(stage, step)
         paths = []
+        options = dict(vars(context))
+        references = analysis_references(raw, defect, options)
         for chart_kind, window in (("box", "14d"), ("trend", "all")):
             data = filter_by_recent_scan_time(raw, window)
             data = handle_outliers_for_defect(data, defect, context.outlier_sigma, context.outlier_handling)
@@ -88,6 +95,8 @@ def generate_report(context, log_callback=None):
             data = apply_process_aggregation(data, context.process_aggregation)
             data = data.loc[(data["Stage_ID"].astype(str) == stage) & (data["Step_ID"].astype(str) == step)]
             data = renderer._filter_chart_group_mode(data, context.chart_group_mode)
+            if not data.empty:
+                annotate_chart_data(renderer, raw, data, defect, options, window, references)
             if data.empty:
                 renderer.fig.clear()
                 ax = renderer.fig.add_subplot(111)
@@ -100,7 +109,10 @@ def generate_report(context, log_callback=None):
                 trend = prepare_trend_data(data, defect, context.time_column)
                 renderer._draw_trend_sequence_by_tool(defect, layer, context.time_column, trend)
             path = images / ("{}_page_{:03d}_{}.png".format(output.stem, page_number, chart_kind))
-            renderer.fig.savefig(str(path), dpi=140)
+            if not data.empty:
+                renderer.export_current_chart(str(path))
+            else:
+                renderer.fig.savefig(str(path), dpi=140)
             paths.append(path)
         slide = presentation.slides.add_slide(layout)
         for shape in list(slide.placeholders):
@@ -112,10 +124,12 @@ def generate_report(context, log_callback=None):
         for index, path in enumerate(paths):
             left = int(width * (.02 + .5 * index))
             picture_width = int(width * .46)
-            picture_height = int(picture_width * .7)
+            with Image.open(path) as img:
+                aspect = img.height / img.width
+            picture_height = int(picture_width * aspect)
             available_height = int(height * .73)
             if picture_height > available_height:
-                picture_width = int(available_height / .7)
+                picture_width = int(available_height / aspect)
             slide.shapes.add_picture(str(path), left, int(height * .18), width=picture_width)
             caption = slide.shapes.add_textbox(left, int(height * .13), int(width * .46), int(height * .05))
             caption.text = "Box | latest 14 days" if index == 0 else "Sequential trend | all data"

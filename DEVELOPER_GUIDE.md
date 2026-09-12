@@ -1,5 +1,20 @@
 # Defect Worse Tool Cross 开发者文档
 
+## 2026-09-12 绘图模块拆分
+
+`defect_worse_ui.DefectWorseToolApp` 继承 `chart_view.ChartViewMixin`。UI 保留 Tk 控件、文件加载、线程队列、风格变量；`chart_view.py` 负责 Box/Overlay/Sequential 的实际布局、选中高亮、悬停详情和导出；`chart_context.py` 负责参考值与排序。部署时务必连同这两个新增模块一起复制。
+
+- `analysis_references(raw, defect, options)` 使用与核心一致的分析窗口和清洗设置，调用 `summarize_one_defect()` 取得各层 Golden，再按文件/计算均值/近期均值确定 BSL 与 threshold。临时零阈值用于获得全部合格候选，不改变用户计算参数。没有合格 Golden 时仍保留可用 BSL；不读取输出 Excel，也不调用上下 5% 截尾函数。
+- `annotate_chart_data(renderer, raw, data, defect, options, chart_window, references=None)` 返回带 `attrs['tool_order']` 和 `attrs['chart_meta']` 的当前绘图 DataFrame。仅添加元数据，不过滤或修改传入图表行；近期排名在单独副本上计算。PPT 可以传入提前算好的 references，避免在一对图之间重复计算。若以后使用会丢失 attrs 的 pandas 操作，应显式重新赋予元数据。
+- `tool_order` 固定使用最近 14 天（全文件最新 Scan_Time 为锚点）的 median/mean 降序，其后追加仅历史存在的 Tool。不同图表窗口共用此顺序；红蓝颜色仍表达当前 Box 数据的排名。若未来需要“每次按当前 Box 值排序”，应做显式模式选择，不要悄悄打乱跨图 T 编号。
+- `_render_chart(kind, defect, stage, time_col, data)` 为统一绘制入口。`kind` 为 box、overlay、sequence；输入应已经按明确的窗口和清洗规则准备完毕。重复时间行不得合并，Overlay X 为各组 cumcount + 1；Sequence X 为按共同 Tool 顺序串接后的逐行序号。
+- `_wrap_pixels()` 使用 Matplotlib 字体实际宽度换行；统计带、主图、侧栏、页脚彼此分区。屏幕超出空间的统计进入可滚动 `Tool Details`。`export_current_chart()` 另建 Agg renderer 扩大画布并附全量列表，不改变当前窗口大小；PPT 再按图片真实比例适配单页。
+- `chart_focus` 按 `(defect, layer, chart grouping)` 保存选中 Tool；`chart_orders` 缓存无 attrs 数据的排序。风格仍通过 `artist_style_overrides` 按 box/line 类型及上下文保存。`_update_overlay_ticks()` 将所选 Tool 的真实时间映射到它自己的观测序号，不能解释为所有 Tool 同时发生；悬停使用逐行元数据精确定位。
+- `NAMED_COLORS` 保存中文/英文名称到十六进制的映射；`_color_controls()` 在全局与单项编辑窗口复用同一控件。选名称只更新原有颜色变量，原有十六进制覆盖接口不变；变量 trace 随控件销毁清理。`_on_chart_resize()` 250ms 防抖重排布局，`destroy()` 取消重排与轮询定时器。
+- `PPTGenerationContext` 新增三个默认 True 的参考线开关，不改变外接三路径方法签名。内置 PPT 使用这些开关和共享绘图模块；模板或自定义外接生成器不自动获得完整 UI 风格变量。
+
+验证命令：`python -m unittest discover -v`。新增 `test_chart_view.py` 覆盖全部 Trend 点距/行数、共同排名/高亮/真实时间、核心参考值一致性、缺失 Golden、参考线开关、黑色 raw 点、密集导出名称/边界以及中文选色映射。改布局时还应渲染稀疏和 30 个以上 Tool 的图，检查标题、刻度、统计和页脚；不要只依赖计算测试。
+
 ## Golden Tool 实现
 
 `add_golden_comparison(grouped, min_wafers)` 接收单个 Defect 的清洗后分组统计，在 Worse Tool 阈值筛选前执行。候选数门槛为 `max(5, min_wafers)`；按 Mean、Median 升序，Wafer_Count 降序和 Tool_Group 升序排序，再按 Stage_ID/Step_ID 取首个候选，以 many-to-one merge 回填。`GOLDEN_COLUMNS` 同时用于非空/空结果输出和 UI 预览。比较值不参与 BSL 或优先级计算。
@@ -297,17 +312,15 @@ Button callback
 
 图表方法：
 
-- `_draw_box()`：Box chart 按 median、mean 降序排列；根据每组可用像素宽度自适应箱宽、raw-data 散点和 X 轴刻度。统计信息不再写在数据区域，而是交给 `_draw_box_sidebar()` 在独立右侧栏中分栏显示。
+- `_draw_box()`：由 `ChartViewMixin` 实现，复用近期 Tool 排名；根据每组可用像素宽度选择顶部统计带、独立侧栏或滚动详情表。Raw-data 散点均为黑色。
 - `_filter_chart_group_mode()`：创建独立 `Chart_Group`。`By Chamber` 直接使用 `Chamber_ID`，`By Equipment ID` 直接使用 `Equipment_ID`，不改变核心 Worse Tool 的 `Tool_Group`。
 - `_filter_chart_process()`：直接复用核心层的 `apply_special_process_rules()` 和 `apply_process_aggregation()`，保证 special process 的 Chart 与 Worse Tool 使用同一批数据。
-- `add_equal_spacing_index()`：把排序后的唯一 `Selected_Time` 映射为连续整数分类坐标；真实时间间隔不会改变点位距离，相同时间仍对齐到同一位置。
+- `add_equal_spacing_index()`：在每个 Tool 内按 `Selected_Time` 稳定排序后使用 `cumcount()+1`，每一行占一个 X 位置；禁止按唯一时间 factorize，也禁止 groupby mean 合并数据点。
 - `build_equal_spacing_time_ticks()` / `sample_tick_labels()`：生成真实时间刻度，并按绘图区宽度抽样，始终保留首尾时间。
-- `_new_chart_axes()`：创建互不覆盖的主绘图区与右侧信息栏，并根据 Tool 数量扩大信息栏。
-- `_draw_tool_sidebar()`：在独立区域自适应分栏显示 Trend Tool 名称，避免图例压住曲线或顶部 Tool 名称相撞。
-- `_draw_box_sidebar()`：在独立区域显示 Box key 和 Tool 的 `N/Median/Mean` 汇总。
-- `_draw_trend()` / `_draw_trend_all_chambers()`：所有 Tool 使用同一个等距时间分类轴；X 轴刻度仍显示用户选中的真实时间。
+- `_render_chart()` / `_render_side()`：在 `chart_view.py` 创建主图与独立侧栏；根据文本像素宽高判断可读性，密集屏幕图转到 Tool Details，导出则扩大物理尺寸并保留完整列表。
+- `_draw_trend()` / `_draw_trend_all_chambers()`：共用逐 Tool 的等距观测序号轴。`_update_overlay_ticks()` 显示选中 Tool 的真实时间，默认取最长序列；不能将这些刻度解释为各 Tool 的共同时间。
 - `_draw_trend_sequence_by_tool()`：按 Tool 分段连续拼接的 Trend。每个 Tool 内按时间排序，Tool 之间加虚线分隔，相邻点距离恒为 1，名称放在右侧栏，Y 轴共用。
-- `_ordered_trend_groups()`：tool/chamber 排序。
+- `annotate_chart_data()`：在 `chart_context.py` 生成共同的近期排序并存入 DataFrame.attrs；仅历史窗口存在的 Tool 按 ID 追加。
 - `_colors()`：颜色方案。
 - `_jitter_positions()`：Box chart 散点抖动。
 - `_get_y_limits()` / `_apply_y_limits()`：用户自定义 Y min/Y max。

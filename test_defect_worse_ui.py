@@ -120,22 +120,21 @@ class DefectWorseUiStyleTests(unittest.TestCase):
         self.assertEqual(trend.loc[trend["Chart_Group"] == "CH-A", "D1"].tolist(), [3.0, 7.0, 5.0])
         self.assertEqual(
             spaced.loc[spaced["Chart_Group"] == "CH-A", "Observation_Index"].tolist(),
-            [1, 1, 3],
+            [1, 2, 3],
         )
         self.assertEqual(
             spaced.loc[spaced["Chart_Group"] == "CH-B", "Observation_Index"].tolist(),
-            [2, 4],
+            [1, 2],
         )
 
         tick_positions, tick_labels = build_equal_spacing_time_ticks(spaced, max_ticks=10)
-        self.assertEqual(tick_positions, [1, 2, 3, 4])
+        self.assertEqual(tick_positions, [1, 2, 3])
         self.assertEqual(
             tick_labels,
             [
                 "2026-07-01\n10:30",
-                "2026-07-02\n08:00",
+                "2026-07-01\n10:30",
                 "2026-07-03\n18:00",
-                "2026-07-09\n23:15",
             ],
         )
 
@@ -178,7 +177,7 @@ class DefectWorseUiStyleTests(unittest.TestCase):
         app.bsl_source = _Value(calculated_label)
         self.assertEqual(app._selected_bsl_source(), BSL_SOURCE_CALCULATED_MEAN)
 
-    def test_both_overlay_trends_use_equal_time_spacing_and_time_labels(self):
+    def test_both_overlay_trends_use_equal_point_spacing_and_time_labels(self):
         raw = pd.DataFrame(
             [
                 {"Chart_Group": "A", "Chart_Group_Type": "Chamber", "Scan_Time": "2026-08-01", "D1": 1.0},
@@ -211,7 +210,7 @@ class DefectWorseUiStyleTests(unittest.TestCase):
                 for line in app.fig.axes[0].lines
                 if line.get_label() in {"A", "B"}
             }
-            self.assertEqual(plotted, {"A": [1, 4, 4], "B": [2, 3]})
+            self.assertEqual(plotted, {"A": [1, 2, 3], "B": [1, 2]})
             tick_text = [label.get_text() for label in app.fig.axes[0].get_xticklabels()]
             self.assertIn("2026-08-01", tick_text)
             self.assertIn("2026-08-20", tick_text)
@@ -227,71 +226,18 @@ class DefectWorseUiStyleTests(unittest.TestCase):
                 for other_bounds in tick_bounds[index + 1 :]:
                     self.assertFalse(bounds.overlaps(other_bounds))
 
-    def test_dense_box_uses_separate_non_overlapping_summary_panel(self):
-        rows = []
-        for tool_index in range(48):
-            for value_index in range(6):
-                rows.append(
-                    {
-                        "Chart_Group": "CHAMBER-{:02d}".format(tool_index),
-                        "Chart_Group_Type": "Chamber",
-                        "D1": float(200 - tool_index * 3 + value_index),
-                    }
-                )
-        app = object.__new__(DefectWorseToolApp)
-        app.fig = Figure(figsize=(8.8, 5.8), dpi=110)
-        app.canvas = FigureCanvasAgg(app.fig)
-        app.box_line_width = _Value(1.4)
-        app.box_label_font_size = _Value(0.0)
-        app.show_box_count = _Value(True)
-        app.show_box_median = _Value(True)
-        app.show_box_mean = _Value(True)
-        app.y_min = _Value("")
-        app.y_max = _Value("")
-        app.selected_chart_item = _Value("")
-        app.status = _Value("")
-        app.selected_chart_artist = None
-        app.chart_artist_registry = {}
-        app.artist_style_overrides = {}
-
-        app._draw_box("D1", "S1_P1", pd.DataFrame(rows))
-
-        plot_ax, sidebar_ax = app.fig.axes
-        self.assertEqual(len(plot_ax.texts), 0)
-        self.assertIsNone(plot_ax.get_legend())
-        self.assertIsNotNone(sidebar_ax.get_legend())
-        summary_lines = [
-            text for text in sidebar_ax.texts if text.get_text().startswith("T") and text.get_text() != "TOOL SUMMARY"
-        ]
-        self.assertEqual(len(summary_lines), 48)
-
-        renderer = app.canvas.get_renderer()
-        plot_bounds = plot_ax.get_window_extent(renderer)
-        key_bounds = sidebar_ax.get_legend().get_window_extent(renderer)
-        summary_bounds = [text.get_window_extent(renderer) for text in summary_lines]
-        for index, bounds in enumerate(summary_bounds):
-            self.assertFalse(bounds.overlaps(plot_bounds))
-            self.assertFalse(bounds.overlaps(key_bounds))
-            for other_index, other_bounds in enumerate(summary_bounds[index + 1 :], start=index + 1):
-                self.assertFalse(
-                    bounds.overlaps(other_bounds),
-                    "{} overlaps {}".format(
-                        summary_lines[index].get_text(),
-                        summary_lines[other_index].get_text(),
-                    ),
-                )
-        tick_bounds = [
-            label.get_window_extent(renderer)
-            for label in plot_ax.get_xticklabels()
-            if label.get_text()
-        ]
-        tick_labels = [label.get_text() for label in plot_ax.get_xticklabels() if label.get_text()]
-        for index, bounds in enumerate(tick_bounds):
-            for other_index, other_bounds in enumerate(tick_bounds[index + 1 :], start=index + 1):
-                self.assertFalse(
-                    bounds.overlaps(other_bounds),
-                    "tick {} overlaps {}".format(tick_labels[index], tick_labels[other_index]),
-                )
+    def test_dense_box_keeps_every_tool_for_scrollable_details(self):
+        from ppt_report import make_renderer
+        app = make_renderer()
+        raw = pd.DataFrame([
+            {"Chart_Group": "CHAMBER_LONG_NAME_{}".format(i), "D1": float(i+j)}
+            for i in range(48) for j in range(6)
+        ])
+        app._draw_box("D1", "S1_P1", raw)
+        self.assertEqual(len(app._chart_stats), 48)
+        self.assertEqual(sum(len(a.get_offsets()) for a in app.fig.axes[0].collections), 288)
+        self.assertTrue(all(g.startswith("CHAMBER_LONG_NAME_") for g in app._chart_groups))
+        self.assertTrue(any("Tool Details" in t.get_text() for t in app.fig.axes[1].texts))
 
     def test_sequential_trend_has_equal_spacing_time_ticks_and_no_top_tool_labels(self):
         raw = pd.DataFrame(
@@ -331,8 +277,8 @@ class DefectWorseUiStyleTests(unittest.TestCase):
         self.assertEqual(len(plot_ax.texts), 0)
         self.assertIsNotNone(sidebar_ax.get_legend())
         tick_text = [label.get_text() for label in plot_ax.get_xticklabels()]
-        self.assertIn("2026-08-01\n00:00", tick_text)
-        self.assertIn("2026-08-06\n00:00", tick_text)
+        self.assertTrue(any("2026-08-01" in text for text in tick_text))
+        self.assertTrue(any("2026-08-20" in text for text in tick_text))
 
     def test_dense_sequential_tool_legend_stays_outside_plot_without_collisions(self):
         rows = []
@@ -370,16 +316,9 @@ class DefectWorseUiStyleTests(unittest.TestCase):
         plot_ax, sidebar_ax = app.fig.axes
         renderer = app.canvas.get_renderer()
         plot_bounds = plot_ax.get_window_extent(renderer)
-        legend = sidebar_ax.get_legend()
-        legend_bounds = legend.get_window_extent(renderer)
-        self.assertFalse(plot_bounds.overlaps(legend_bounds))
+        self.assertEqual(len(app._chart_stats), 30)
         self.assertEqual(len(plot_ax.texts), 0)
-
-        legend_text_bounds = [text.get_window_extent(renderer) for text in legend.get_texts()]
-        for index, bounds in enumerate(legend_text_bounds):
-            for other_bounds in legend_text_bounds[index + 1 :]:
-                self.assertFalse(bounds.overlaps(other_bounds))
-
+        self.assertTrue(any("Tool Details" in t.get_text() for t in sidebar_ax.texts))
         tick_bounds = [
             label.get_window_extent(renderer)
             for label in plot_ax.get_xticklabels()

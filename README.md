@@ -1,5 +1,17 @@
 # Defect Worse Tool Cross 使用说明
 
+## 2026-09-12 图表与选色更新
+
+- **所有 Trend 均按数据点等距**，不再提供时间等距模式。每个 Tool 按所选时间列稳定排序；同一时间的不同 wafer 仍是独立点。Overlay 中每个 Tool 都从 1 开始；Sequential 则按 Tool 连续拼接，跨 Tool 的相邻点距离也为 1。
+- Overlay 同一横坐标上的不同 Tool **不代表同一时刻**。X 轴默认显示点数最多 Tool 的真实时间，并注明 `dates for T编号`。点击另一根线或在 `Tool Details` 中选中 Tool，时间刻度切换到该 Tool；悬停任何点可查看完整 Tool、实际时间、count、Lot 和 Wafer。
+- Box 与 Trend 共用 Tool 顺序：按最近 14 天的中位数降序、均值降序；仅历史窗口出现的 Tool 按 ID 追加。T 编号在同一 Defect/layer/分组方式中保持一致。Box 的红蓝颜色仍按当前绘图数据的高低排名，因此选择其他 Box 窗口时，颜色排名和横向顺序可能不同。
+- 点击 Box、曲线或 `Tool Details` 表格行可高亮同一 Tool，切换图型仍保留高亮；`Clear highlight` 恢复全部显示。高亮和自定义风格仅保存在当前 UI 会话内。
+- `Tool Details` 提供可上下、左右滚动的完整 Tool 表，包括 Rows、Unique wafers、Median、Mean。图表空间足够时直接标注统计值，否则放到侧栏；侧栏也放不下时改为详情窗口，不压缩到无法辨认。`Save PNG` 自动扩大输出尺寸并附完整 Tool 列表，不减少数据点。
+- 主标题、数据窗口/清洗方式/行数/独立 wafer 数与参考值说明分区显示。`Chart Style` 中可独立开关 BSL、Worse threshold、Golden Mean 参考线；内置 PPT 同步这些开关。参考线使用当前 **Run 分析参数**，不读取 append Excel 历史记录，也不随 Box/Trend 显示窗口改变；Golden 使用核心分析的 Equipment/Chamber 聚合方式与最低片数门槛。缺少有效基准会标记 unavailable，而不是当作 0。
+- 两个选色入口都新增“红色、黄色、蓝色、绿色、橙色、紫色、粉色、青色、黑色、灰色”名称及色块预览。修改单个 Tool：选中图形 → `Edit Selected` → 选择颜色、宽度 → `Apply`。全局统一线色：`Chart Style` → `Line palette = Custom single` → 选择颜色 → `Apply & Redraw`。保留自定义色值和选色器；默认 `Distinct` 仍给各条线分配不同颜色。
+
+提示：近期窗口均相对于输入文件最大的 Scan_Time，而不是电脑当天日期；Rows 是数据行数，Unique wafers 按 Lot + Wafer 去重，两者不一定相等。上下各 5% 裁剪仅用于 Recent Trimmed BSL，不参与上述图表数据或参考线计算。
+
 ## Golden Tool 对照列
 
 每个 Defect、每个当前 layer 的 Golden Tool 定义为：与本次分析相同时间窗口、相同清洗和聚合口径下，Mean_Count 最低的合格 Tool。有效片数按 `Lot_ID + Wafer_NO` 去重统计，至少 5 片；若 Minimum wafers 设置高于 5，则使用更高门槛。均值并列时依次按中位数更低、wafer 数更多、Tool ID 升序选定。
@@ -25,7 +37,7 @@ The Charts tab now separates workflow controls from visual styling:
 
 1. Use the left panel to load data and select defect, process, grouping, chart type, time window, and outlier handling.
 2. Select `Chart Style...` to open the resizable, vertically scrollable style dialog. Box labels (`Count`, `Median`, and `Mean`) can be shown or hidden independently.
-3. Box charts are ordered high-to-low by median and use a red-to-blue rank scale: red indicates higher median groups and blue indicates lower median groups. Raw-data points remain visible.
+3. Box and Trend share the latest-14-day median/mean ranking. Box colors indicate current-window rank from red (high) to blue (low); raw-data points remain black and visible.
 4. Trend charts assign distinct shuffled colors to different lines by default. Global line width, marker size, palette, and Y-axis scale are configured in the style dialog.
 5. Click a box or trend line, then select `Edit Selected` above the chart to change only that item's color and width.
 6. Per-item styles remain active when the same chart context is redrawn during the current UI session.
@@ -38,7 +50,7 @@ The scrollable left panel is divided into `Data Source`, `View`, and `Data Prepa
 
 - The upper/lower 5% trim is used only by `Recent Trimmed BSL`. It returns one BSL value and does not remove rows from worse-tool statistics or chart data.
 - Trend preparation no longer averages rows that share the same Tool and Scan Time. Every valid input row becomes one plotted point after the explicitly selected time-window and outlier settings are applied.
-- Both overlay Trend modes sort each Tool by Scan Time, then plot its observations at `1, 2, 3, ...`. Every adjacent point is exactly one X-axis unit apart; real-time gaps never affect horizontal spacing.
+- Both overlay Trend modes sort each Tool by the selected time column, then plot its observations at `1, 2, 3, ...`. Every adjacent point is exactly one X-axis unit apart; real-time gaps never affect horizontal spacing. Axis times belong to the selected reference Tool, not a shared calendar.
 - A recent-window or Trend operation stops with an explicit error if Scan Time is invalid; rows are not silently discarded.
 - Empty Chamber or Equipment IDs remain visible as `(Missing Chamber)` or `(Missing Equipment ID)`.
 - CSV/Excel loading preserves identifiers such as `NA` and `N/A` instead of converting them to missing values.
@@ -169,9 +181,9 @@ python defect_worse_ui.py
 
 图表类型：
 
-- `Box chart by selected group`：按中位数从高到低排列；中位数相同时按均值从高到低排列。绘图区保留完整 raw data；Box key、Tool 名称以及可选的 `N`、`Median`、`Mean` 统一放在独立右侧信息栏。Tool 多时信息栏自动分栏、缩小字号，X 轴也会抽样编号，避免文字覆盖 Box、高点或相邻标签。
-- `Trend overlay equal point spacing`：按用户选择的时间列排序，将每个唯一时间映射为等距分类坐标；X 轴显示抽样后的真实时间，而不是无信息的点序号。
-- `Trend all tools equal point spacing`：所有选定 Tool 在同一坐标系比较，使用相同的等距时间分类轴并显示真实时间。Tool 图例位于绘图区右侧，不会覆盖曲线。
+- `Box chart by selected group`：与 Trend 共用近期排名。少量 Tool 直接标注 Rows/Median/Mean；密集时使用右侧统计或可滚动详情表，保留全部黑色 raw data 点。
+- `Trend overlay equal point spacing`：每个 Tool 独立按所选时间排序、逐点等距排列，重复时间不合并。X 轴显示当前参考 Tool 的真实时间。
+- `Trend all tools equal point spacing`：同样使用逐 Tool 的点序号坐标，不按真实时间对齐；完整 Tool 名称可在右侧或 Tool Details 查看。
 - `Sequential trend by selected group`：第一个 group 按时间排序画完后紧接第二个 group，再接第三个 group；相邻数据点距离固定为 1，X 轴显示真实时间，Tool 名称移至右侧栏，所有 group 共用同一个 Y 轴。
 
 Chart style 支持：
@@ -252,16 +264,16 @@ Trigger
 
 ## 9. PPT 接口
 
-`Run PPT Generator` 是预留接口。UI 中需要填写：
+`Generate Worse Tool PPT` 默认调用内置生成器。UI 路径为：
 
 - `PPT output path`
 - `PPT template`
-- `Input image`
+- `Chart export folder`（目录，不是单张图片）
 
-点击按钮后会在后台线程调用 `ppt_integration.py`，并把以上三个路径传给：
+点击按钮后在后台线程调用 `ppt_integration.run_ppt_generation(context, log_callback)`。如需接入内网自定义方法，在该函数中转调保留的三路径接口：
 
 ```python
 run_external_ppt_method(ppt_output_path, ppt_template_path, input_image_path, log_callback)
 ```
 
-默认实现会提示尚未配置。复制到内网后，只需要替换 `ppt_integration.py` 中的 `run_external_ppt_method()`，接入自己的 PPT 生成方法即可。运行过程中可调用 `log_callback("message")` 打印日志，日志会显示在 UI 状态栏并输出到控制台。
+`run_external_ppt_method()` 本身仍为占位方法；替换它并在 `run_ppt_generation()` 中转调即可接入。运行过程中可调用 `log_callback("message")` 打印日志，日志显示在 UI 状态栏并输出到控制台。内置 PPT 的密集图会等比例缩放以适应单页，查看细节请打开同时导出的完整 PNG。

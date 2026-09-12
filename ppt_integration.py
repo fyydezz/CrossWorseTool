@@ -33,6 +33,9 @@ class PPTGenerationContext:
     special_process_rules: dict = field(default_factory=dict)
     chart_group_mode: str = "By Chamber"
     time_column: str = "Scan_Time"
+    show_bsl_line: bool = True
+    show_threshold_line: bool = True
+    show_golden_line: bool = True
 
 
 def run_external_ppt_method(

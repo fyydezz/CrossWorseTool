@@ -12,9 +12,6 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.colors import is_color_like, to_hex
-from matplotlib.lines import Line2D
-from matplotlib.font_manager import FontProperties
-from matplotlib.ticker import MaxNLocator
 
 from defect_worse_tool import (
     DEFAULT_SHEET_NAME,
@@ -48,6 +45,15 @@ from defect_worse_tool import (
     write_result_to_excel,
 )
 from ppt_integration import PPTGenerationContext, run_ppt_generation
+from chart_view import ChartViewMixin
+
+NAMED_COLORS = {
+    "红色 / Red": "#D32F2F", "黄色 / Yellow": "#FBC02D",
+    "蓝色 / Blue": "#1565C0", "绿色 / Green": "#2E7D32",
+    "橙色 / Orange": "#EF6C00", "紫色 / Purple": "#7B1FA2",
+    "粉色 / Pink": "#D81B60", "青色 / Cyan": "#0097A7",
+    "黑色 / Black": "#000000", "灰色 / Gray": "#757575",
+}
 
 
 DATA_FILE_TYPES = [
@@ -114,15 +120,8 @@ def prepare_trend_data(df: pd.DataFrame, defect: str, time_col: str) -> pd.DataF
 
 def add_equal_spacing_index(trend: pd.DataFrame) -> pd.DataFrame:
     spaced = trend.copy()
-    ordered_times = (
-        spaced[["Selected_Time"]]
-        .drop_duplicates()
-        .sort_values("Selected_Time", kind="mergesort")
-        ["Selected_Time"]
-        .tolist()
-    )
-    time_positions = {timestamp: index for index, timestamp in enumerate(ordered_times, start=1)}
-    spaced["Observation_Index"] = spaced["Selected_Time"].map(time_positions).astype(int)
+    spaced = spaced.sort_values(["Chart_Group", "Selected_Time"], kind="mergesort")
+    spaced["Observation_Index"] = spaced.groupby("Chart_Group", sort=False, dropna=False).cumcount() + 1
     return spaced
 
 
@@ -169,7 +168,11 @@ def rank_worse_results(result: pd.DataFrame) -> pd.DataFrame:
 def build_equal_spacing_time_ticks(
     spaced_trend: pd.DataFrame,
     max_ticks: int = 12,
+    reference_tool: Optional[str] = None,
 ) -> Tuple[List[int], List[str]]:
+    if reference_tool is None and not spaced_trend.empty:
+        reference_tool = spaced_trend.groupby("Chart_Group", sort=False).size().idxmax()
+    spaced_trend = spaced_trend.loc[spaced_trend["Chart_Group"] == reference_tool]
     timeline = (
         spaced_trend[["Observation_Index", "Selected_Time"]]
         .drop_duplicates(subset=["Observation_Index"])
@@ -193,7 +196,7 @@ def build_equal_spacing_time_ticks(
     )
 
 
-class DefectWorseToolApp(tk.Tk):
+class DefectWorseToolApp(ChartViewMixin, tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Defect Worse Tool Cross")
@@ -235,6 +238,9 @@ class DefectWorseToolApp(tk.Tk):
         self.show_box_count = tk.BooleanVar(value=True)
         self.show_box_median = tk.BooleanVar(value=True)
         self.show_box_mean = tk.BooleanVar(value=True)
+        self.show_bsl_line = tk.BooleanVar(value=True)
+        self.show_threshold_line = tk.BooleanVar(value=True)
+        self.show_golden_line = tk.BooleanVar(value=True)
         self.y_min = tk.StringVar()
         self.y_max = tk.StringVar()
         self.selected_chart_item = tk.StringVar(value="No chart item selected")
@@ -257,7 +263,14 @@ class DefectWorseToolApp(tk.Tk):
         self.bsl_source.trace_add("write", lambda *_: self._sync_bsl_source_state())
         self.special_step_rules.trace_add("write", lambda *_: self._refresh_process_stage_options())
         self.process_aggregation.trace_add("write", lambda *_: self._refresh_process_stage_options())
-        self.after(150, self._poll_results)
+        self._poll_job = self.after(150, self._poll_results)
+
+    def destroy(self) -> None:
+        for name in ("_poll_job", "_chart_resize_job"):
+            job = self.__dict__.get(name)
+            if job is not None:
+                self.after_cancel(job)
+        super().destroy()
 
     def _configure_style(self) -> None:
         style = ttk.Style(self)
@@ -653,12 +666,27 @@ class DefectWorseToolApp(tk.Tk):
             row=0, column=1, padx=(8, 0)
         )
         ttk.Button(toolbar, text="Save PNG", command=self.save_png).grid(row=0, column=2, padx=(8, 0))
+        ttk.Button(toolbar, text="Tool Details", command=self.open_tool_details).grid(row=0, column=3, padx=(8, 0))
+        ttk.Button(toolbar, text="Clear highlight", command=lambda: self.focus_tool(None)).grid(row=0, column=4)
         self.fig, self.ax = plt.subplots(figsize=(8.8, 5.8), dpi=110)
         self.ax.set_title("Load raw data to begin")
         self.ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
         self.canvas = FigureCanvasTkAgg(self.fig, master=chart_frame)
         self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
         self.canvas.mpl_connect("pick_event", self._on_chart_pick)
+        self.canvas.mpl_connect("motion_notify_event", self._on_chart_hover)
+        self.canvas.mpl_connect("resize_event", self._on_chart_resize)
+
+    def _on_chart_resize(self, event) -> None:
+        if "_chart_request" not in self.__dict__:
+            return
+        pending = self.__dict__.get("_chart_resize_job")
+        if pending is not None:
+            self.after_cancel(pending)
+        def redraw():
+            self._chart_resize_job = None
+            self._render_chart(*self._chart_request)
+        self._chart_resize_job = self.after(250, redraw)
 
     def _spin_row(
         self,
@@ -764,11 +792,9 @@ class DefectWorseToolApp(tk.Tk):
         ttk.Label(trend_frame, text="Custom color").grid(row=3, column=0, sticky="w", pady=(6, 0))
         color_row = ttk.Frame(trend_frame, style="Card.TFrame")
         color_row.grid(row=3, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
-        color_row.columnconfigure(0, weight=1)
-        ttk.Entry(color_row, textvariable=self.custom_color).grid(row=0, column=0, sticky="ew")
-        ttk.Button(color_row, text="Choose", command=lambda: self._choose_color(self.custom_color)).grid(
-            row=0, column=1, padx=(5, 0)
-        )
+        self._color_controls(color_row, self.custom_color)
+        ttk.Label(trend_frame, text="自选单色请将 Line palette 设为 Custom single",
+                  wraplength=300).grid(row=4, column=0, columnspan=2, sticky="w", pady=(5, 0))
 
         axis_frame = ttk.LabelFrame(body, text="Y axis", padding=10)
         axis_frame.grid(row=4, column=0, sticky="ew", pady=(10, 0))
@@ -777,6 +803,9 @@ class DefectWorseToolApp(tk.Tk):
         ttk.Entry(axis_frame, textvariable=self.y_min).grid(row=0, column=1, sticky="ew", padx=(6, 0))
         ttk.Label(axis_frame, text="Maximum").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(axis_frame, textvariable=self.y_max).grid(row=1, column=1, sticky="ew", padx=(6, 0), pady=(6, 0))
+        for row, (label, variable) in enumerate((("BSL reference", self.show_bsl_line),
+                ("Worse threshold", self.show_threshold_line), ("Golden Mean", self.show_golden_line)), 2):
+            ttk.Checkbutton(axis_frame, text=label, variable=variable).grid(row=row, column=0, columnspan=2, sticky="w")
 
         actions = ttk.Frame(body, style="Card.TFrame")
         actions.grid(row=5, column=0, sticky="ew", pady=(14, 0))
@@ -811,15 +840,40 @@ class DefectWorseToolApp(tk.Tk):
             self.start_plot()
 
     def _choose_color(self, variable: tk.StringVar) -> None:
-        chosen = colorchooser.askcolor(color=variable.get().strip() or "#1565C0", parent=self)[1]
+        value = variable.get().strip()
+        chosen = colorchooser.askcolor(color=to_hex(value) if is_color_like(value) else "#1565C0", parent=self)[1]
         if chosen:
             variable.set(chosen)
+
+    def _color_controls(self, parent, variable) -> None:
+        parent.columnconfigure(0, weight=1)
+        name = tk.StringVar(parent)
+        combo = ttk.Combobox(parent, textvariable=name, values=list(NAMED_COLORS), state="readonly", width=16)
+        combo.grid(row=0, column=0, sticky="ew")
+        swatch = tk.Label(parent, width=3, relief="solid", borderwidth=1)
+        swatch.grid(row=0, column=1, padx=(5, 0))
+        combo.bind("<<ComboboxSelected>>", lambda event: variable.set(NAMED_COLORS[name.get()]))
+        ttk.Entry(parent, textvariable=variable, width=14).grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        ttk.Button(parent, text="自定义…", command=lambda: self._choose_color(variable)).grid(
+            row=1, column=1, padx=(5, 0), pady=(5, 0))
+        def refresh(*_):
+            value = variable.get().strip()
+            if is_color_like(value):
+                value = to_hex(value)
+                name.set(next((label for label, hex_value in NAMED_COLORS.items()
+                               if hex_value.lower() == value.lower()), "自定义 / Custom"))
+                swatch.configure(background=value)
+        token = variable.trace_add("write", refresh)
+        parent.bind("<Destroy>", lambda event: variable.trace_remove("write", token)
+                    if event.widget == parent else None, add="+")
+        refresh()
 
     def _on_chart_pick(self, event) -> None:
         metadata = self.chart_artist_registry.get(event.artist)
         if metadata is None:
             return
         self.selected_chart_artist = event.artist
+        self.focus_tool(metadata["label"])
         self.selected_chart_item.set(
             "Selected {}: {}".format(metadata["kind"], metadata["label"])
         )
@@ -836,24 +890,20 @@ class DefectWorseToolApp(tk.Tk):
         width_var = tk.DoubleVar(value=float(metadata["linewidth"]))
         window = tk.Toplevel(self)
         window.title("Edit Selected Chart Item")
-        window.geometry("390x230")
+        window.geometry("450x320")
         window.resizable(False, False)
         window.transient(self)
         body = ttk.Frame(window, style="Card.TFrame", padding=18)
         body.pack(fill="both", expand=True, padx=12, pady=12)
         body.columnconfigure(1, weight=1)
         ttk.Label(body, text="SELECTED ITEM", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(body, text=str(metadata["label"]), style="Card.TLabel").grid(
+        ttk.Label(body, text=str(metadata["label"]), style="Card.TLabel", wraplength=360).grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(4, 14)
         )
         ttk.Label(body, text="Color", style="Card.TLabel").grid(row=2, column=0, sticky="w")
         color_row = ttk.Frame(body, style="Card.TFrame")
         color_row.grid(row=2, column=1, sticky="ew", padx=(8, 0))
-        color_row.columnconfigure(0, weight=1)
-        ttk.Entry(color_row, textvariable=color_var).grid(row=0, column=0, sticky="ew")
-        ttk.Button(color_row, text="Choose", command=lambda: self._choose_color(color_var)).grid(
-            row=0, column=1, padx=(5, 0)
-        )
+        self._color_controls(color_row, color_var)
         ttk.Label(body, text="Width", style="Card.TLabel").grid(row=3, column=0, sticky="w", pady=(8, 0))
         ttk.Spinbox(body, from_=0.5, to=12.0, increment=0.2, textvariable=width_var).grid(
             row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0)
@@ -882,7 +932,7 @@ class DefectWorseToolApp(tk.Tk):
                 "color": color,
                 "linewidth": width,
             }
-            self.canvas.draw_idle()
+            self._render_chart(*self._chart_request)
             self.status.set("Updated {} style.".format(metadata["label"]))
             window.destroy()
 
@@ -1148,6 +1198,9 @@ class DefectWorseToolApp(tk.Tk):
             special_process_rules=self._parse_special_step_rules_for_ui(),
             chart_group_mode=self.chart_group_mode.get(),
             time_column=self.time_column.get(),
+            show_bsl_line=self.show_bsl_line.get(),
+            show_threshold_line=self.show_threshold_line.get(),
+            show_golden_line=self.show_golden_line.get(),
         )
 
     def _ppt_worker(self, context: PPTGenerationContext) -> None:
@@ -1189,6 +1242,14 @@ class DefectWorseToolApp(tk.Tk):
             chart_group_mode = self.chart_group_mode.get().strip()
             if chart_group_mode not in CHART_GROUP_MODES:
                 raise ValueError("Choose either By Chamber or By Equipment ID for chart grouping.")
+            reference_options = dict(bsl_path=self.bsl_path.get().strip(), bsl_source=self._selected_bsl_source(),
+                 data_window=self._selected_data_window(self.analysis_data_window),
+                 bsl_multiplier=float(self.bsl_multiplier.get()), min_wafers=int(self.min_wafers.get()),
+                 outlier_sigma=sigma, outlier_handling=outlier_handling,
+                 special_process_rules=special_rules, process_aggregation=process_aggregation,
+                 chart_group_mode=chart_group_mode)
+            if reference_options["min_wafers"] < 1 or reference_options["bsl_multiplier"] < 0 or sigma < 0:
+                raise ValueError("Minimum wafers must be positive; multiplier and sigma must be nonnegative.")
         except tk.TclError:
             messagebox.showwarning("Invalid setting", "Outlier sigma must be numeric.")
             return
@@ -1209,6 +1270,7 @@ class DefectWorseToolApp(tk.Tk):
                 chart_data_window,
                 chart_group_mode,
                 outlier_handling,
+                reference_options,
             ),
             daemon=True,
         ).start()
@@ -1225,6 +1287,7 @@ class DefectWorseToolApp(tk.Tk):
         chart_data_window: str,
         chart_group_mode: str,
         outlier_handling: str,
+        reference_options: Optional[dict] = None,
     ) -> None:
         try:
             assert self.raw_df is not None
@@ -1252,9 +1315,15 @@ class DefectWorseToolApp(tk.Tk):
                     )
                 )
             if chart_type == CHART_TYPE_BOX:
+                from chart_context import annotate_chart_data
+                if reference_options is not None:
+                    annotate_chart_data(self, self.raw_df, df, defect, reference_options, chart_data_window)
                 self.result_queue.put(("box", (defect, filter_label, df)))
                 return
             trend = prepare_trend_data(df, defect, time_col)
+            if reference_options is not None:
+                from chart_context import annotate_chart_data
+                annotate_chart_data(self, self.raw_df, trend, defect, reference_options, chart_data_window)
             if trend.empty:
                 raise ValueError("{} cannot be parsed for trend chart.".format(time_col))
             if chart_type == CHART_TYPE_ALL_GROUPS:
@@ -1315,7 +1384,7 @@ class DefectWorseToolApp(tk.Tk):
                     self._draw_trend_sequence_by_tool(*payload)
         except queue.Empty:
             pass
-        self.after(150, self._poll_results)
+        self._poll_job = self.after(150, self._poll_results)
 
     def _apply_loaded_data(
         self,
@@ -1507,503 +1576,6 @@ class DefectWorseToolApp(tk.Tk):
         override = self.artist_style_overrides.get((kind, str(key)), {})
         return override.get("color", color), float(override.get("linewidth", linewidth))
 
-    @staticmethod
-    def _tool_sidebar_columns(group_count: int) -> int:
-        return max(1, (int(group_count) + 17) // 18)
-
-    def _new_chart_axes(self, group_count: int, bottom: float = 0.16):
-        sidebar_columns = self._tool_sidebar_columns(group_count)
-        sidebar_fraction = min(0.50, 0.23 + 0.15 * (sidebar_columns - 1))
-        self.fig.clear()
-        grid = self.fig.add_gridspec(
-            1,
-            2,
-            width_ratios=[1.0 - sidebar_fraction, sidebar_fraction],
-            wspace=0.08,
-            left=0.08,
-            right=0.985,
-            bottom=bottom,
-            top=0.90,
-        )
-        ax = self.fig.add_subplot(grid[0, 0])
-        sidebar_ax = self.fig.add_subplot(grid[0, 1])
-        sidebar_ax.set_axis_off()
-        self.ax = ax
-        return ax, sidebar_ax
-
-    def _draw_tool_sidebar(self, sidebar_ax, ax, group_count: int) -> None:
-        handles, labels = ax.get_legend_handles_labels()
-        columns = self._tool_sidebar_columns(group_count)
-        font_size = 8.0 if group_count <= 18 else 7.0 if group_count <= 36 else 6.2
-        sidebar_ax.legend(
-            handles,
-            labels,
-            title="TOOLS",
-            loc="upper left",
-            bbox_to_anchor=(0.0, 1.0),
-            borderaxespad=0.0,
-            frameon=False,
-            fontsize=font_size,
-            title_fontsize=max(7.0, font_size),
-            ncol=columns,
-            columnspacing=0.8,
-            handlelength=1.8,
-            handletextpad=0.45,
-            labelspacing=0.55,
-        )
-
-    @staticmethod
-    def _shorten_sidebar_label(value: str, max_chars: int) -> str:
-        label = str(value)
-        if len(label) <= max_chars:
-            return label
-        return label[: max(1, max_chars - 1)] + "..."
-
-    def _draw_box_sidebar(
-        self,
-        sidebar_ax,
-        full_labels: Sequence[str],
-        counts: Sequence[int],
-        medians: Sequence[float],
-        means: Sequence[float],
-        stats_font_size: float,
-        show_summary: bool = True,
-    ) -> None:
-        key_handles = [
-            Line2D([0], [0], color="#B40426", linewidth=6, label="Higher median"),
-            Line2D([0], [0], color="#3B4CC0", linewidth=6, label="Lower median"),
-            Line2D([0], [0], color="#C23B22", linewidth=2.2, label="Median"),
-        ]
-        if self.show_box_mean.get():
-            key_handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    marker="D",
-                    color="none",
-                    markerfacecolor="#F2B134",
-                    markeredgecolor="#263238",
-                    label="Mean",
-                )
-            )
-        key_handles.append(
-            Line2D(
-                [0],
-                [0],
-                marker="o",
-                color="none",
-                markerfacecolor="#000000",
-                markeredgecolor="#FFFFFF",
-                label="Raw data",
-            )
-        )
-        key_legend = sidebar_ax.legend(
-            handles=key_handles,
-            title="BOX KEY",
-            loc="upper left",
-            bbox_to_anchor=(0.0, 1.0),
-            borderaxespad=0.0,
-            frameon=False,
-            fontsize=7.0,
-            title_fontsize=7.5,
-            ncol=2,
-            columnspacing=0.8,
-            handlelength=1.8,
-            handletextpad=0.4,
-            labelspacing=0.45,
-        )
-        sidebar_ax.add_artist(key_legend)
-        if not show_summary:
-            return
-
-        sidebar_ax.text(
-            0.0,
-            0.78,
-            "TOOL SUMMARY",
-            transform=sidebar_ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=7.5,
-            fontweight="bold",
-            color="#263442",
-        )
-        group_count = len(full_labels)
-        columns = self._tool_sidebar_columns(group_count)
-        rows = max(1, (group_count + columns - 1) // columns)
-        available_height = 0.72
-        axes_height_pixels = (
-            float(self.fig.get_figheight())
-            * float(self.fig.dpi)
-            * float(sidebar_ax.get_position().height)
-        )
-        row_height_pixels = axes_height_pixels * available_height / float(rows)
-        line_count = 2 if any(
-            (self.show_box_count.get(), self.show_box_median.get(), self.show_box_mean.get())
-        ) else 1
-        fit_factor = 0.34 if line_count == 2 else 0.62
-        fit_font_size = row_height_pixels * 72.0 / float(self.fig.dpi) * fit_factor
-        max_font_size = 8.0 if columns == 1 else 7.0 if columns == 2 else 5.8
-        font_size = max(5.0, min(float(stats_font_size), max_font_size, fit_font_size))
-        max_tool_chars = 28 if columns == 1 else 20 if columns == 2 else 14
-
-        for index, (tool, count, median, mean) in enumerate(
-            zip(full_labels, counts, medians, means)
-        ):
-            column = index // rows
-            row = index % rows
-            x = column / float(columns)
-            y = 0.73 - (row + 0.5) * available_height / float(rows)
-            stats = []
-            if self.show_box_count.get():
-                stats.append("N{}".format(count))
-            if self.show_box_median.get():
-                stats.append("Md{:.2f}".format(median))
-            if self.show_box_mean.get():
-                stats.append("Av{:.2f}".format(mean))
-            tool_label = self._shorten_sidebar_label(tool, max_tool_chars)
-            line = "T{} {}".format(index + 1, tool_label)
-            if stats:
-                line += "\n   " + " ".join(stats)
-            sidebar_ax.text(
-                x,
-                y,
-                line,
-                transform=sidebar_ax.transAxes,
-                ha="left",
-                va="center",
-                fontsize=font_size,
-                family="monospace",
-                color="#263442",
-                clip_on=True,
-            )
-
-    @staticmethod
-    def _apply_equal_time_ticks(ax, spaced_trend: pd.DataFrame, time_col: str) -> None:
-        plot_width_pixels = (
-            float(ax.figure.get_figwidth())
-            * float(ax.figure.dpi)
-            * float(ax.get_position().width)
-        )
-        max_ticks = max(5, min(12, int(plot_width_pixels / 85.0)))
-        tick_positions, tick_labels = build_equal_spacing_time_ticks(
-            spaced_trend,
-            max_ticks=max_ticks,
-        )
-        ax.set_xticks(tick_positions)
-        ax.set_xticklabels(tick_labels, rotation=38, ha="right", fontsize=7.5)
-        ax.set_xlabel("{} (chronological, equal spacing)".format(time_col))
-
-    def _draw_box(self, defect: str, stage: str, df: pd.DataFrame) -> None:
-        self._reset_chart_artists()
-        grouped_parts = []
-        for tool, part in df.groupby("Chart_Group"):
-            values = pd.to_numeric(part[defect], errors="coerce").dropna()
-            if len(values) > 0:
-                grouped_parts.append(
-                    (
-                        str(tool),
-                        self._display_tool_label(part, str(tool)),
-                        values.values,
-                        len(values),
-                        float(values.median()),
-                        float(values.mean()),
-                    )
-                )
-        grouped_parts.sort(key=lambda item: (item[4], item[5]), reverse=True)
-        if not grouped_parts:
-            messagebox.showerror("Plot failed", "No numeric values to plot.")
-            return
-        ax, sidebar_ax = self._new_chart_axes(len(grouped_parts))
-        full_labels = [item[1] for item in grouped_parts]
-        pixels_per_box = self._box_pixels_per_group(len(grouped_parts), ax=ax)
-        compact_labels = len(grouped_parts) > 12 or pixels_per_box < 80
-        stats_font_size = self._box_stats_font_size(pixels_per_box)
-        measure = self.fig.canvas.get_renderer()
-        font = FontProperties(size=stats_font_size)
-        stat_labels = ["N={}".format(item[3]) for item in grouped_parts]
-        stat_labels += ["Median={:.2f}".format(item[4]) for item in grouped_parts]
-        stat_labels += ["Mean={:.2f}".format(item[5]) for item in grouped_parts]
-        text_width = max(measure.get_text_width_height_descent(label, font, False)[0]
-                         for label in stat_labels)
-        inline_stats = pixels_per_box >= max(115, text_width + 16) and self._get_y_limits() == (None, None)
-        labels = ["T{}".format(index) for index in range(1, len(grouped_parts) + 1)] if compact_labels else full_labels
-        groups = [item[2] for item in grouped_parts]
-        counts = [item[3] for item in grouped_parts]
-        medians = [item[4] for item in grouped_parts]
-        means = [item[5] for item in grouped_parts]
-        box_width = 0.64 if pixels_per_box >= 110 else 0.56 if pixels_per_box >= 70 else 0.46
-        raw_point_size = 18 if pixels_per_box >= 110 else 14 if pixels_per_box >= 70 else 10
-        ax.set_facecolor("#FBFAF7")
-        self.fig.patch.set_facecolor("#F4F1EA")
-        box = ax.boxplot(
-            groups,
-            labels=labels,
-            showmeans=self.show_box_mean.get(),
-            showfliers=False,
-            patch_artist=True,
-            widths=box_width,
-            medianprops={"color": "#C23B22", "linewidth": 2.2},
-            meanprops={
-                "marker": "D",
-                "markerfacecolor": "#F2B134",
-                "markeredgecolor": "#263238",
-                "markersize": 5,
-            },
-            whiskerprops={"color": "#52606D", "linewidth": 1.1},
-            capprops={"color": "#52606D", "linewidth": 1.1},
-            flierprops={
-                "marker": "o",
-                "markerfacecolor": "#C23B22",
-                "markeredgecolor": "none",
-                "markersize": 3,
-                "alpha": 0.35,
-            },
-        )
-        rank_colors = self._box_rank_colors(len(groups))
-        group_label = self._chart_group_label(df)
-        for patch, group_info, rank_color in zip(box["boxes"], grouped_parts, rank_colors):
-            tool, display_label = group_info[0], group_info[1]
-            style_key = "{}|{}|{}|{}".format(defect, stage, group_label, tool)
-            box_color, outline_width = self._artist_style(
-                "box", style_key, rank_color, float(self.box_line_width.get())
-            )
-            patch.set_facecolor(box_color)
-            patch.set_alpha(0.72)
-            patch.set_edgecolor(box_color)
-            patch.set_linewidth(outline_width)
-            self._register_chart_artist(
-                patch,
-                "box",
-                style_key,
-                display_label,
-                box_color,
-                outline_width,
-            )
-        for index, values in enumerate(groups, start=1):
-            ax.scatter(
-                self._jitter_positions(index, len(values)),
-                values,
-                s=raw_point_size,
-                color="#000000",
-                edgecolors="none",
-                linewidths=0,
-                alpha=1.0,
-                zorder=3,
-            )
-        ax.set_title("{} | {} | Box by {} (red high, blue low)".format(defect, stage, group_label))
-        ax.set_xlabel("{} (median high to low)".format(group_label))
-        ax.set_ylabel("Defect count")
-        if compact_labels and pixels_per_box < 12:
-            plot_width_pixels = pixels_per_box * len(labels)
-            max_ticks = max(8, int(plot_width_pixels / 24.0))
-            tick_positions, tick_labels = sample_tick_labels(
-                list(range(1, len(labels) + 1)),
-                labels,
-                max_ticks=max_ticks,
-            )
-            ax.set_xticks(tick_positions)
-            ax.set_xticklabels(tick_labels)
-        ax.tick_params(
-            axis="x",
-            rotation=90 if compact_labels and pixels_per_box < 18 else 0 if compact_labels else 45,
-            labelsize=6 if compact_labels and pixels_per_box < 18 else 8,
-        )
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
-        ax.grid(True, axis="y", color="#D7D4CC", linewidth=0.7, alpha=0.7)
-        ax.set_axisbelow(True)
-        ax.margins(y=0.08)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        self._draw_box_sidebar(
-            sidebar_ax,
-            full_labels,
-            counts,
-            medians,
-            means,
-            stats_font_size,
-            show_summary=not inline_stats,
-        )
-        if inline_stats:
-            for index, (count, median, mean) in enumerate(zip(counts, medians, means), 1):
-                stats = []
-                if self.show_box_count.get():
-                    stats.append("N={}".format(count))
-                if self.show_box_median.get():
-                    stats.append("Median={:.2f}".format(median))
-                if self.show_box_mean.get():
-                    stats.append("Mean={:.2f}".format(mean))
-                ax.text(index, 0.98, "\n".join(stats), transform=ax.get_xaxis_transform(),
-                        ha="center", va="top", fontsize=stats_font_size)
-            ax.margins(y=0.28)
-        self._apply_y_limits(ax)
-        self.canvas.draw()
-        self.status.set("Box chart rendered. Click a box to edit it. Groups: {}".format(len(groups)))
-
-    def _draw_trend(self, defect: str, stage: str, time_col: str, trend: pd.DataFrame) -> None:
-        self._reset_chart_artists()
-        spaced_trend = add_equal_spacing_index(trend)
-        groups = self._ordered_trend_groups(spaced_trend)
-        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
-        colors = self._colors(len(groups))
-        total_points = 0
-        for color, tool in zip(colors, groups):
-            part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
-            label = self._display_tool_label(part, str(tool))
-            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
-            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
-            line, = ax.plot(
-                part["Observation_Index"],
-                part[defect],
-                marker="o" if self.marker_size.get() > 0 else None,
-                markersize=self.marker_size.get(),
-                linewidth=line_width,
-                color=line_color,
-                label=label,
-            )
-            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-            total_points += len(part)
-        ax.set_title("{} | {} | Trend overlay (equal point spacing)".format(defect, stage))
-        self._apply_equal_time_ticks(ax, spaced_trend, time_col)
-        ax.set_ylabel("Defect count")
-        max_time_index = int(spaced_trend["Observation_Index"].max())
-        ax.set_xlim(0.5, max_time_index + 0.5)
-        ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
-        ax.set_axisbelow(True)
-        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
-        self._apply_y_limits(ax)
-        self.canvas.draw()
-        self.status.set(
-            "Equal-spacing trend rendered with {} point(s). Click a line to edit it.".format(
-                total_points
-            )
-        )
-
-    def _draw_trend_all_chambers(
-        self,
-        defect: str,
-        stage: str,
-        time_col: str,
-        trend: pd.DataFrame,
-    ) -> None:
-        self._reset_chart_artists()
-        spaced_trend = add_equal_spacing_index(trend)
-        groups = self._ordered_trend_groups(spaced_trend)
-        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
-        colors = self._colors(len(groups))
-        total_points = 0
-        for color, tool in zip(colors, groups):
-            part = spaced_trend.loc[spaced_trend["Chart_Group"] == tool]
-            label = self._display_tool_label(part, str(tool))
-            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
-            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
-            line, = ax.plot(
-                part["Observation_Index"],
-                part[defect],
-                marker="o" if self.marker_size.get() > 0 else None,
-                markersize=self.marker_size.get(),
-                linewidth=line_width,
-                color=line_color,
-                label=label,
-            )
-            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-            total_points += len(part)
-        ax.set_title("{} | {} | All groups trend (equal point spacing)".format(defect, stage))
-        self._apply_equal_time_ticks(ax, spaced_trend, time_col)
-        ax.set_ylabel("Defect count")
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
-        max_time_index = int(spaced_trend["Observation_Index"].max())
-        ax.set_xlim(0.5, max_time_index + 0.5)
-        ax.grid(True, color="#D7DEE8", linewidth=0.7, alpha=0.8)
-        ax.set_axisbelow(True)
-        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
-        self._apply_y_limits(ax)
-        self.canvas.draw()
-        self.status.set(
-            "All-group equal-spacing trend rendered with {} point(s). Groups: {}.".format(
-                total_points,
-                len(groups),
-            )
-        )
-
-    def _draw_trend_sequence_by_tool(
-        self,
-        defect: str,
-        stage: str,
-        time_col: str,
-        trend: pd.DataFrame,
-    ) -> None:
-        self._reset_chart_artists()
-        groups = self._ordered_trend_groups(trend)
-        ax, sidebar_ax = self._new_chart_axes(len(groups), bottom=0.24)
-        colors = self._colors(len(groups))
-        x_positions: List[int] = []
-        x_labels: List[str] = []
-        boundaries: List[float] = []
-        current_x = 1
-
-        for index, (color, tool) in enumerate(zip(colors, groups)):
-            part = trend.loc[trend["Chart_Group"] == tool].sort_values("Selected_Time").reset_index(drop=True)
-            if part.empty:
-                continue
-            xs = list(range(current_x, current_x + len(part)))
-            label = self._display_tool_label(part, str(tool))
-            style_key = "{}|{}|{}|{}".format(defect, stage, self._chart_group_label(part), tool)
-            line_color, line_width = self._artist_style("line", style_key, color, self.line_width.get())
-            line, = ax.plot(
-                xs,
-                part[defect],
-                marker="o" if self.marker_size.get() > 0 else None,
-                markersize=self.marker_size.get(),
-                linewidth=line_width,
-                color=line_color,
-                label=label,
-            )
-            self._register_chart_artist(line, "line", style_key, label, line_color, line_width)
-            x_positions.extend(xs)
-            x_labels.extend(part["Selected_Time"].dt.strftime("%Y-%m-%d\n%H:%M").tolist())
-            current_x += len(part)
-            if index < len(groups) - 1:
-                boundaries.append(current_x - 0.5)
-
-        if not x_positions:
-            messagebox.showerror("Plot failed", "No valid trend points to plot.")
-            return
-
-        for boundary in boundaries:
-            ax.axvline(boundary, linestyle="--", linewidth=1.0, color="#6B7280", alpha=0.45)
-
-        self._apply_y_limits(ax)
-        plot_width_pixels = (
-            float(self.fig.get_figwidth())
-            * float(self.fig.dpi)
-            * float(ax.get_position().width)
-        )
-        max_ticks = max(5, min(12, int(plot_width_pixels / 85.0)))
-        shown_positions, shown_labels = sample_tick_labels(
-            x_positions,
-            x_labels,
-            max_ticks=max_ticks,
-        )
-        ax.set_xticks(shown_positions)
-        ax.set_xticklabels(shown_labels, rotation=38, ha="right", fontsize=7.5)
-        ax.set_xlim(min(x_positions) - 0.5, max(x_positions) + 0.5)
-        ax.set_title("{} | {} | Sequential trend by selected group".format(defect, stage))
-        ax.set_xlabel("{} sorted within each Tool; every point is 1 unit apart".format(time_col))
-        ax.set_ylabel("Defect count")
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=8))
-        ax.grid(True, axis="y", color="#D7DEE8", linewidth=0.7, alpha=0.8)
-        ax.set_axisbelow(True)
-        self._draw_tool_sidebar(sidebar_ax, ax, len(groups))
-        self.canvas.draw()
-        self.status.set("Sequential trend rendered. Click a line to edit it. Groups: {}".format(len(groups)))
-
-    def _ordered_trend_groups(self, trend: pd.DataFrame) -> List[str]:
-        order = (
-            trend[["Chart_Group"]]
-            .drop_duplicates()
-            .sort_values(["Chart_Group"])
-        )
-        return order["Chart_Group"].astype(str).tolist()
 
     def _box_pixels_per_group(self, group_count: int, ax=None) -> float:
         if group_count <= 0:
@@ -2076,7 +1648,7 @@ class DefectWorseToolApp(tk.Tk):
             filetypes=[("PNG image", "*.png")],
         )
         if path:
-            self.fig.savefig(path, dpi=180, bbox_inches="tight")
+            self.export_current_chart(path)
             self.status.set("Saved {}".format(path))
 
 
