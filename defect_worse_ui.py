@@ -252,6 +252,7 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
         self.defect_columns: List[str] = []
         self.stage_values: List[str] = []
         self.result_queue: queue.Queue = queue.Queue()
+        self._plot_request_id = 0
         self.busy = False
         self.chart_style_window: Optional[tk.Toplevel] = None
         self.selected_chart_artist = None
@@ -991,6 +992,8 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
             self._load_stage_filter_from_worse(path, self.output_sheet.get().strip() or None)
 
     def _set_busy(self, busy: bool, message: str) -> None:
+        if busy:
+            self._invalidate_plot_requests()
         self.busy = busy
         self.status.set(message)
         self.run_button.configure(state="disabled" if busy else "normal")
@@ -1223,6 +1226,10 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
             self.result_queue.put(("ppt_error", exc))
 
     def start_plot(self) -> None:
+        if self.busy:
+            messagebox.showinfo("Operation in progress", "Please wait for loading, analysis or PPT generation to finish.")
+            return
+        request_id = self._invalidate_plot_requests()
         if self.raw_df is None:
             messagebox.showwarning("Missing raw data", "Please load raw defect data first.")
             return
@@ -1256,10 +1263,13 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
         except ValueError as exc:
             messagebox.showwarning("Invalid chart settings", str(exc))
             return
-        self.status.set("Preparing chart...")
+        self.status.set("Preparing chart: {} | {} | {} | {}".format(
+            defect, stage, chart_group_mode, chart_data_window))
         threading.Thread(
             target=self._plot_worker,
             args=(
+                request_id,
+                self.raw_df,
                 defect,
                 stage,
                 self.chart_type.get(),
@@ -1277,6 +1287,8 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
 
     def _plot_worker(
         self,
+        request_id: int,
+        raw_data: pd.DataFrame,
         defect: str,
         stage: str,
         chart_type: str,
@@ -1289,11 +1301,14 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
         outlier_handling: str,
         reference_options: Optional[dict] = None,
     ) -> None:
+        def send(kind, payload):
+            self.result_queue.put(("plot_result", (request_id, kind, payload)))
+
         try:
-            assert self.raw_df is not None
-            if time_col not in self.raw_df.columns:
+            # Capture the dataset at submission; loading replaces self.raw_df.
+            if time_col not in raw_data.columns:
                 raise ValueError("Selected time column does not exist: {}".format(time_col))
-            window_df = filter_by_recent_scan_time(self.raw_df, data_window=chart_data_window)
+            window_df = filter_by_recent_scan_time(raw_data, data_window=chart_data_window)
             df = handle_outliers_for_defect(
                 window_df,
                 defect,
@@ -1317,13 +1332,13 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
             if chart_type == CHART_TYPE_BOX:
                 from chart_context import annotate_chart_data
                 if reference_options is not None:
-                    annotate_chart_data(self, self.raw_df, df, defect, reference_options, chart_data_window)
-                self.result_queue.put(("box", (defect, filter_label, df)))
+                    annotate_chart_data(self, raw_data, df, defect, reference_options, chart_data_window)
+                send("box", (defect, filter_label, df))
                 return
             trend = prepare_trend_data(df, defect, time_col)
             if reference_options is not None:
                 from chart_context import annotate_chart_data
-                annotate_chart_data(self, self.raw_df, trend, defect, reference_options, chart_data_window)
+                annotate_chart_data(self, raw_data, trend, defect, reference_options, chart_data_window)
             if trend.empty:
                 raise ValueError("{} cannot be parsed for trend chart.".format(time_col))
             if chart_type == CHART_TYPE_ALL_GROUPS:
@@ -1332,15 +1347,36 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
                 kind = "trend_sequence_by_tool"
             else:
                 kind = "trend"
-            self.result_queue.put((kind, (defect, filter_label, time_col, trend)))
+            send(kind, (defect, filter_label, time_col, trend))
         except Exception as exc:
-            self.result_queue.put(("error", exc))
+            send("error", exc)
+
+    def _invalidate_plot_requests(self) -> int:
+        self._plot_request_id = self.__dict__.get("_plot_request_id", 0) + 1
+        return self._plot_request_id
+
+    def _apply_plot_result(self, result) -> None:
+        request_id, kind, payload = result
+        if request_id != self._plot_request_id:
+            return
+        try:
+            if kind == "error":
+                raise payload
+            handlers = {"box": self._draw_box, "trend": self._draw_trend,
+                        "trend_all_chambers": self._draw_trend_all_chambers,
+                        "trend_sequence_by_tool": self._draw_trend_sequence_by_tool}
+            handlers[kind](*payload)
+        except Exception as exc:
+            self.status.set("Chart failed. Check settings and plot again.")
+            messagebox.showerror("Chart failed", str(exc))
 
     def _poll_results(self) -> None:
         try:
             while True:
                 kind, payload = self.result_queue.get_nowait()
-                if kind == "error":
+                if kind == "plot_result":
+                    self._apply_plot_result(payload)
+                elif kind == "error":
                     self._set_busy(False, "Operation failed.")
                     messagebox.showerror("Error", str(payload))
                 elif kind == "ppt_error":
@@ -1374,14 +1410,6 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
                         "Analysis complete",
                         "Generated {} worse-tool row(s).\n\nOutput:\n{}".format(len(result), output),
                     )
-                elif kind == "box":
-                    self._draw_box(*payload)
-                elif kind == "trend":
-                    self._draw_trend(*payload)
-                elif kind == "trend_all_chambers":
-                    self._draw_trend_all_chambers(*payload)
-                elif kind == "trend_sequence_by_tool":
-                    self._draw_trend_sequence_by_tool(*payload)
         except queue.Empty:
             pass
         self._poll_job = self.after(150, self._poll_results)
@@ -1393,6 +1421,7 @@ class DefectWorseToolApp(ChartViewMixin, tk.Tk):
         stages: Sequence[str],
         columns: Sequence[str],
     ) -> None:
+        self._invalidate_plot_requests()
         self.raw_df = df
         self.all_columns = list(columns)
         self.defect_columns = list(defects)

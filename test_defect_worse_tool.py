@@ -35,6 +35,42 @@ class DefectWorseToolRegressionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.app = DefectWorseToolApp.__new__(DefectWorseToolApp)
 
+    def test_recent_trimmed_bsl_is_fixed_to_14_days_for_all_analysis_windows(self):
+        rows = []
+        for day, start in (("2026-06-01", 100), ("2026-09-05", 10), ("2026-09-19", 20)):
+            for value in range(start, start + 10):
+                rows.append(dict(Lot_ID=day, Wafer_NO=value, Scan_Time=day, D1=value,
+                                 Stage_ID="S", Step_ID="P", Equipment_ID="KP01", Chamber_ID="A"))
+        raw = pd.DataFrame(rows)
+        with TemporaryDirectory() as folder:
+            source, bsl = Path(folder) / "raw.csv", Path(folder) / "bsl.csv"
+            raw.to_csv(source, index=False)
+            pd.DataFrame({"Defect type": ["D1"], "BSL count": [1]}).to_csv(bsl, index=False)
+            for window, count in (("all", 30), ("14d", 20), ("7d", 10)):
+                with self.subTest(window=window):
+                    result = build_worse_tool_result(str(source), str(bsl), defect_columns=["D1"],
+                                                     data_window=window, outlier_sigma=100)
+                    row = result.iloc[0]
+                    self.assertAlmostEqual(row["Recent Trimmed BSL"], 19.5)
+                    self.assertEqual(row["Row_Count"], count)
+                    self.assertEqual(row["Wafer_Count"], count)
+                    expected = raw.iloc[-count:].D1
+                    self.assertAlmostEqual(row["Mean_Count"], expected.mean())
+                    self.assertAlmostEqual(row["Median_Count"], expected.median())
+
+    def test_recent_trimmed_bsl_uses_all_available_data_when_shorter_than_14_days(self):
+        raw = pd.DataFrame([dict(Lot_ID="L", Wafer_NO=i, Scan_Time="2026-09-{:02d}".format(10 + i),
+                                 D1=i, Stage_ID="S", Step_ID="P", Equipment_ID="KP01", Chamber_ID="A")
+                            for i in range(10)])
+        with TemporaryDirectory() as folder:
+            source, bsl = Path(folder) / "raw.csv", Path(folder) / "bsl.csv"
+            raw.to_csv(source, index=False)
+            pd.DataFrame({"Defect type": ["D1"], "BSL count": [1]}).to_csv(bsl, index=False)
+            for handling in (OUTLIER_HANDLING_FILTER, OUTLIER_HANDLING_CAP):
+                result = build_worse_tool_result(str(source), str(bsl), defect_columns=["D1"],
+                                                 outlier_handling=handling, outlier_sigma=1)
+                self.assertAlmostEqual(result["Recent Trimmed BSL"].iloc[0], 4.5)
+
     def test_stage_bsl_does_not_overwrite_global_bsl(self) -> None:
         bsl = pd.DataFrame(
             [

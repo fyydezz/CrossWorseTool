@@ -1,5 +1,15 @@
 # Defect Worse Tool Cross 开发者文档
 
+## 2026-09-19 对照窗口与画图任务
+
+`build_worse_tool_result()` 从完整输入 `all_data` 单独计算 `recent_data = filter_by_recent_scan_time(all_data, '14d')`，所有 Defect 的 `Recent Trimmed BSL` 都使用它。分析和统计仍使用所选窗口的 `df`，截尾函数不修改这两个 DataFrame。`recent_mean` 基准复用同一个两周窗口，但仍独立执行用户选择的 3σ 清洗，不能把截尾结果拿来替代它。无效时间沿用近期过滤的显式报错策略，不退回全量窗口。
+
+画图消息统一使用 `('plot_result', (request_id, kind, payload))`，成功和异常均携带编号。`start_plot()` 在主线程生成递增编号，连同当时的原始 DataFrame 引用和解析后的参数传给 `_plot_worker(request_id, raw_data, ...)`。原始 DataFrame 在本流程中只读，加载新文件通过替换引用实现；后续维护不得原地修改它。Worker 不再读取可被替换的 `self.raw_df`。
+
+`_poll_results()` 将画图消息交给 `_apply_plot_result()`，只处理当前编号；过期成功或异常均直接丢弃。`_set_busy(True, ...)` 与 `_apply_loaded_data()` 会使旧编号失效。画图异常不再改变其他任务的 busy 状态；渲染异常也被捕获，避免中断队列轮询。这里是逻辑取消，不是强制终止 pandas 计算线程。
+
+测试：`test_defect_worse_tool.py` 覆盖三种分析窗口的对照值一致、14 天边界、短窗口、截尾与统计隔离；`test_plot_requests.py` 用线程事件确定性复现旧任务后完成，覆盖旧错误隔离、数据引用快照、加载失效、各 Trend 消息与渲染失败后继续轮询。
+
 ## 2026-09-12 绘图模块拆分
 
 `defect_worse_ui.DefectWorseToolApp` 继承 `chart_view.ChartViewMixin`。UI 保留 Tk 控件、文件加载、线程队列、风格变量；`chart_view.py` 负责 Box/Overlay/Sequential 的实际布局、选中高亮、悬停详情和导出；`chart_context.py` 负责参考值与排序。部署时务必连同这两个新增模块一起复制。
@@ -307,8 +317,8 @@ Button callback
 ### 4.3 图表流程 UI
 
 - `start_plot()`：校验 defect、process、time column、Y scale、特殊规则。
-- `_plot_worker()`：后台准备图表数据。
-- `_poll_results()`：收到 queue kind 后调用对应绘图方法。
+- `_plot_worker(request_id, raw_data, ...)`：后台使用提交时的数据准备图表，成功和异常都封装为带编号的 plot_result 消息。
+- `_poll_results()`：经 `_apply_plot_result()` 检查当前请求编号后才调用对应绘图方法。
 
 图表方法：
 
@@ -428,8 +438,8 @@ CHAMBER_PREFIXES = ("KE", "KT")
 ### 新增图表类型
 
 1. 在 `_build_chart_tab()` 的 chart type combobox 中增加名称。
-2. 在 `_plot_worker()` 中准备数据并投递新的 queue kind。
-3. 在 `_poll_results()` 中处理新的 kind。
+2. 在 `_plot_worker()` 中准备数据，经内部 `send(kind, payload)` 投递带编号的 plot_result 消息。
+3. 在 `_apply_plot_result()` 的 handlers 中注册新的 kind；不要绕过请求编号检查。
 4. 新增 `_draw_xxx()`，只在主线程绘图。
 
 ### 调整特殊 Process 格式

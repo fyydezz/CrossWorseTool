@@ -1,5 +1,12 @@
 # Defect Worse Tool Cross 使用说明
 
+## 2026-09-19 两项修复
+
+- `Recent Trimmed BSL` 对照列固定使用完整输入中最新 Scan_Time 往前 14 天的数据（含边界），不足两周时使用可用的全部数据；仅在该数值计算中排除 5% 分位数以下和 95% 分位数以上的数据。选择 All data、Latest 2 weeks 或 Latest 1 week 不再改变这一对照窗口。它不使用 3σ 清洗后的数据，也不会影响 Worse Tool 的片数、均值、中位数或图表数据。Append 的历史行不会自动回算。
+- 连续点击 `Plot Chart` 时只接受最后一次请求的结果；旧请求的报错也会忽略。加载新文件、启动分析或 PPT 时会使此前画图请求失效。画图状态显示本次 Defect、layer、分组和时间窗口；加载/分析/PPT 运行中暂不接受新的画图请求。已开始的旧计算可能继续在后台完成，但不会更新画面。
+
+由于该对照列必须定位最近 14 天，Scan_Time 无法解析时即使分析选择 All data，也会提示修正时间，而不是悄悄省略这些行。近期窗口仍相对于文件最新时间，不是电脑当天日期。
+
 ## 2026-09-12 图表与选色更新
 
 - **所有 Trend 均按数据点等距**，不再提供时间等距模式。每个 Tool 按所选时间列稳定排序；同一时间的不同 wafer 仍是独立点。Overlay 中每个 Tool 都从 1 开始；Sequential 则按 Tool 连续拼接，跨 Tool 的相邻点距离也为 1。
@@ -126,7 +133,7 @@ BSL count
 6. 每个 defect 单独过滤高端 outlier，默认过滤 `mean + 3 * std` 以上的点。
 7. 每个 process/tool 组内 unique wafer 数小于 `Minimum wafers` 时过滤掉，默认 5。
 8. 根据 `BSL source` 使用输入文件 BSL 或计算 Mean BSL；组内平均值或中位数大于等于 `BSL count * BSL multiplier` 时输出，默认倍数 1.5。
-9. 输出新增 `Recent Trimmed BSL`，基于当前分析窗口内该 defect 的全部数据，去掉上下各 5% 后取均值，用于观察近期 BSL 水平。
+9. 输出 `Recent Trimmed BSL`，独立使用完整输入中最近 14 天该 defect 的数据，按上下 5% 分位数截尾后取均值；不足两周使用全部可用数据，与分析窗口无关。
 
 ## 5. 特殊 Process 规则
 

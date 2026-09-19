@@ -637,15 +637,16 @@ def build_worse_tool_result(
     else:
         stage_lookup, defect_lookup = {}, {}
 
+    # Keep this reporting baseline independent of the analysis/cleaning window.
+    recent_data = filter_by_recent_scan_time(all_data, DATA_WINDOW_14D)
     pieces = []
     for defect in defects:
-        recent_trimmed_bsl = calculate_recent_trimmed_bsl(df, defect)
+        recent_trimmed_bsl = calculate_recent_trimmed_bsl(recent_data, defect)
         current_stage_lookup = stage_lookup
         current_defect_lookup = defect_lookup
         if source in (BSL_SOURCE_CALCULATED_MEAN, BSL_SOURCE_RECENT_MEAN):
             calculated_bsl = calculate_mean_bsl(
-                filter_by_recent_scan_time(all_data, DATA_WINDOW_14D)
-                if source == BSL_SOURCE_RECENT_MEAN else df,
+                recent_data if source == BSL_SOURCE_RECENT_MEAN else df,
                 defect,
                 outlier_sigma=outlier_sigma,
                 outlier_handling=outlier_handling,
